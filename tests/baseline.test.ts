@@ -146,7 +146,7 @@ test('branch=<name>: the run resolver targets the EXPLICIT branch, not the conte
 // what a sidecar published by such a run records.
 const JOB_LOG_STACK = ['utf8-bom-line-prefix', 'api-rfc3339-line-prefix'];
 
-// The sidecar the CURRENT Action publishes (DN-89.D38 §4, DN-160.D1 (3)): its context version, the
+// The sidecar the CURRENT Action publishes (DN-89.D38 §4; DN-160.D1, the stored job): its context version, the
 // publishing run's native verdict token, the ordered stack the stored bytes were declared under, and
 // the subject they are — this run's job.
 function recordedSidecar(outcomeToken: string, transport: unknown = JOB_LOG_STACK): Record<string, unknown> {
@@ -930,7 +930,7 @@ test('A6: a recorded stack rides back verbatim and in order, and the stored byte
 });
 
 // A sidecar written before 0.4.0 names no job, so it is not compared, whatever else it records
-// (DN-160.D1 (3)); one that names this job is then held to its transport (DN-89.D38 §4).
+// (DN-160.D1, the stored job); one that names this job is then held to its transport (DN-89.D38 §4).
 const UNRECORDED = /recorded no job/;
 
 const COLD_START_CELLS: ReadonlyArray<{

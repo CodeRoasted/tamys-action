@@ -16,7 +16,7 @@
 //     artifact API names no job.
 // A job that cannot be established names no lineage: the run reads and writes no remote baseline,
 // and uploads no report, rather than fall back to a shared constant — that fallback is the defect
-// this module exists to close (DN-160.D1 (4)).
+// this module exists to close (DN-160.D1, the unestablished job).
 
 import { createHash } from 'crypto';
 import type { ListedJob, RunJobs } from './jobgraph.js';
@@ -49,7 +49,7 @@ export function ownJob(listing: RunJobs, runnerName: string | undefined): Subjec
     return { kind: 'established', subject: { job: rows[0]!.name, capture: '' } };
 }
 
-// The one warning a run whose job is unestablished prints (DN-160.D1 (4)).
+// The one warning a run whose job is unestablished prints (DN-160.D1, the unestablished job).
 export function unestablishedWarning(cause: string): string {
     return (
         `Tamys: this run's job could not be established — ${cause}. A baseline lineage belongs to one ` +
@@ -99,7 +99,7 @@ export function derivedBaselineName(subject: BaselineSubject, commentTag: string
 
 // The report artifact's name (ADR-14.D12), over the same key, plus the run attempt: nothing resolves
 // a report by name, its one reader follows the comment's pointer, and after a re-run a name alone
-// would match two reports (DN-160.D4 (6)). An explicit `baseline-name` does not rename it.
+// would match two reports (DN-160.D4, the report carries its attempt). An explicit `baseline-name` does not rename it.
 export function derivedReportName(subject: BaselineSubject, commentTag: string, runAttempt: number): string {
     return `${derivedName(TAMYS_REPORT_ARTIFACT_PREFIX, subject, commentTag)}-${runAttempt}`;
 }

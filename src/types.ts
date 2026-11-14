@@ -110,7 +110,7 @@ export interface BaselineProvenance {
      */
     cross_workflow?: { baseline: string; changed: string };
     /**
-     * Set only when the stored bytes are another job's than this run's (DN-160.D1 (3)): both
+     * Set only when the stored bytes are another job's than this run's (DN-160.D1, the stored job): both
      * subjects. Only `artifact=` carries it — a named baseline is the user's explicit choice, so a
      * cross-job pair is DECLARED on the report, as a cross-workflow pair is; under `auto` and
      * `branch=` the Action chose the pairing, so a differing subject is refused instead.
@@ -158,7 +158,7 @@ export interface TamysCommentContext {
 // 0.3.0: the baseline sidecar records the transport stack its stored bytes were declared under
 // (DN-89.D38 §4), a REQUIRED member; a sidecar without it is not a baseline.
 // 0.4.0: the baseline sidecar records the subject its stored bytes are — the job and the capture
-// (DN-160.D1 (3)), a REQUIRED member; a sidecar without it is not a baseline.
+// (DN-160.D1, the stored job), a REQUIRED member; a sidecar without it is not a baseline.
 export const CONTEXT_VERSION = '0.4.0';
 
 // The self-published baseline store (contract § 3): every run uploads its ingested log under its
@@ -183,7 +183,7 @@ export interface BaselineMeta {
      * `--baseline-transport`.
      */
     transport: string[];
-    /** The subject the stored bytes are (DN-160.D1 (3)). REQUIRED since 0.4.0. */
+    /** The subject the stored bytes are (DN-160.D1, the stored job). REQUIRED since 0.4.0. */
     subject: BaselineSubject;
 }
 

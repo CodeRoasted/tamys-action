@@ -291,7 +291,7 @@ async function run(): Promise<void> {
     const commentTag = core.getInput('comment-tag') || undefined;
     // The lineage: an explicit `baseline-name` verbatim (the user is King of the baseline), else the
     // name derived from the subject; the report's name is always derived. A run whose job is not
-    // established has neither, and says why once (DN-160.D1 (4)).
+    // established has neither, and says why once (DN-160.D1, the unestablished job).
     let lineage: Lineage | null = null;
     let reportName: string | null = null;
     if (subjectResolution.kind === 'established') {
@@ -519,7 +519,7 @@ async function run(): Promise<void> {
     const shouldSeed =
         publishMode === 'always' ? true : publishMode === 'never' ? false : pr ? true : !runOutcomeBad;
     // Seeds the lineage under its name with the subject stamped. A run whose job is not established
-    // has no lineage and seeds nothing; its warning already said so (DN-160.D1 (4)).
+    // has no lineage and seeds nothing; its warning already said so (DN-160.D1, the unestablished job).
     const seed = async (): Promise<void> => {
         if (lineage === null) return;
         const { artifactName, subject } = lineage;

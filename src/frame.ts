@@ -585,7 +585,7 @@ function subjectPhrase(subject: BaselineSubject): string {
     return subject.capture === '' ? job : `${job} (capture \`${escapeInline(subject.capture)}\`)`;
 }
 
-// The cross-job declaration (DN-160.D1 (3)), beside the cross-workflow line: an `artifact=` baseline
+// The cross-job declaration (DN-160.D1, the stored job), beside the cross-workflow line: an `artifact=` baseline
 // whose stored bytes are another job's than this run's. A named baseline is the user's explicit
 // choice, so the pair is diffed and DECLARED, never refused; without this line a reader takes one
 // job's log for the other's history. This run's job comes from the runs API and the baseline's from

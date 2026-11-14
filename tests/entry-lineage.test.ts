@@ -47,7 +47,7 @@ function digest(job: string, capture: string, tag: string): string {
     return createHash('sha256').update(JSON.stringify([job, capture, tag]), 'utf8').digest('hex').slice(0, 16);
 }
 const BUILD_BASELINE = `tamys-baseline-build-build-${digest(BUILD, '', '')}`;
-// DN-160.D4 (6): the report's name carries the run attempt; the baseline's never does.
+// DN-160.D4: the report's name carries the run attempt; the baseline's never does.
 const buildReport = (attempt: number) => `tamys-report-build-build-${digest(BUILD, '', '')}-${attempt}`;
 
 interface ListingRow {

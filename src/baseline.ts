@@ -163,7 +163,7 @@ export interface ResolveParams {
     /**
      * The lineage this run belongs to: the artifact name the branch-run resolvers look for (= what
      * this pipeline publishes) and the subject the stored bytes must be. Null when this run's job
-     * is not established (DN-160.D1 (4)): no remote baseline is then read, and `path=` and `none`
+     * is not established (DN-160.D1, the unestablished job): no remote baseline is then read, and `path=` and `none`
      * are unaffected.
      */
     lineage: Lineage | null;
@@ -270,7 +270,7 @@ async function resolveRemoteStrict(params: ResolveParams, lineage: Lineage): Pro
             if (crossWorkflow) meta.cross_workflow = crossWorkflow;
         }
         // A named baseline is the user's explicit choice: another job's bytes are diffed and
-        // DECLARED, as another workflow's are (DN-160.D1 (3)).
+        // DECLARED, as another workflow's are (DN-160.D1, the stored job).
         if (!sameSubject(chosen.stored, subject)) meta.cross_subject = { baseline: chosen.stored, changed: subject };
         return { ...(await chosen.candidate.extract(workDir)), meta };
     }
@@ -315,7 +315,7 @@ async function resolveRemoteStrict(params: ResolveParams, lineage: Lineage): Pro
     const where = `green base run ${baseRun.id}`;
     const walk = await walkCandidates(octokit, owner, repo, newestFirst(live, artifactName), subject, false);
     // The Action chose this pairing, so a walk that finds no entry of this job is the Action's to
-    // refuse, never a diff to declare (DN-160.D1 (3), DN-160.D4 (4)).
+    // refuse, never a diff to declare (DN-160.D1, the stored job; DN-160.D4, no match).
     if (walk.kind !== 'matched') {
         throw new BaselineRefusal(unmatchedReason(walk, artifactName, where, subject));
     }
@@ -335,12 +335,12 @@ async function resolveRemoteStrict(params: ResolveParams, lineage: Lineage): Pro
     return { ...(await walk.candidate.extract(workDir)), meta };
 }
 
-// What a user does when two jobs meet on one baseline name (DN-160.D1 (2)).
+// What a user does when two jobs meet on one baseline name (DN-160.D1, the shared-name remedy).
 const SHARED_NAME_REMEDY =
     'Give each job that runs Tamys its own `baseline-name`, or leave it unset so each job derives its own; ' +
     'a matrix job whose `name:` is a literal needs the matrix value in its `name:` or in `baseline-name`';
 
-// The most candidates one resolution downloads (DN-160.D4 (3)): a bound of 4 × the compressed
+// The most candidates one resolution downloads (DN-160.D4, the download ceiling): a bound of 4 × the compressed
 // cap on the walk. Only a name two jobs share drives the walk past its first download — a re-run's
 // newest entry is the job's own latest attempt.
 export const MAX_LINEAGE_CANDIDATES = 4;
@@ -392,7 +392,7 @@ type Walk =
           unread: number;
       };
 
-// The newest-first walk (DN-160.D4 (2)): download one candidate at a time and read its sidecar;
+// The newest-first walk (DN-160.D4): download one candidate at a time and read its sidecar;
 // the first whose subject equals this run's is the baseline, and the walk stops there. A sidecar
 // with no subject never matches. `keepNewest` holds the newest candidate for a caller that may
 // still take it when nothing matches; every other candidate not taken is discarded before the
@@ -427,7 +427,7 @@ function distinctJobs(subjects: readonly (BaselineSubject | null)[]): BaselineSu
     return distinct;
 }
 
-// Why a walk that matched nothing is refused (DN-160.D4 (3), (4)).
+// Why a walk that matched nothing is refused (DN-160.D4, the download ceiling and no match).
 function unmatchedReason(
     walk: Extract<Walk, { kind: 'unmatched' }>,
     name: string,
@@ -452,7 +452,7 @@ function unmatchedReason(
 }
 
 // A match found behind another job's entry is exact, so it is used, but the shared name costs a
-// download on every run and is said once (DN-160.D4 (5)).
+// download on every run and is said once (DN-160.D4, a match behind another job).
 function warnIfShared(
     walk: Extract<Walk, { kind: 'matched' }>,
     name: string,
@@ -470,7 +470,7 @@ function warnIfShared(
 // `artifact=`: this job's own entry when the walk found one; else the newest, declared, when every
 // candidate stamps one and the same other job; else a refusal — the user named an artifact that
 // several jobs stored, or one whose job is unrecorded, and nothing says which was meant
-// (DN-160.D4 (4)).
+// (DN-160.D4, no match).
 function namedChoice(
     walk: Walk,
     name: string,
@@ -623,7 +623,7 @@ export type NamedArtifactScan =
           artifact: RepoArtifact;
           /**
            * The live entries of the name the newest's producing run holds, newest first, the newest
-           * among them — read from the scan's own pages, with no request of their own (DN-160.D4 (1)).
+           * among them — read from the scan's own pages, with no request of their own (DN-160.D4, the candidates).
            */
           candidates: RepoArtifact[];
       }
@@ -753,7 +753,7 @@ function recordedTransport(sidecar: unknown, artifactId: number): string[] {
     return recorded;
 }
 
-// A stored baseline is one job's bytes, and a lineage belongs to one job (DN-160.D1 (3)). A sidecar
+// A stored baseline is one job's bytes, and a lineage belongs to one job (DN-160.D1, the stored job). A sidecar
 // that names no subject — written before 0.4.0, or not a job name and a capture value — cannot show
 // whose bytes it describes, so it never matches: one cold start per lineage, which re-seeds it, on
 // the precedent of the transport.
