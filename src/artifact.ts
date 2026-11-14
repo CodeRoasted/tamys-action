@@ -1,7 +1,7 @@
 // Artifact transport:
 //   • publishBaselineLog       — self-publishing the baseline (contract § 3, step 6),
 //                                via @actions/artifact's runtime-token path.
-//   • publishReport            — the full report as this run's `tamys-report` artifact,
+//   • publishReport            — the full report as this run's `tamys-report-*` artifact,
 //                                on every run that has one (ADR-14.D12), same path.
 //   • writeRenderedComment     — `render` mode: write the escaped comment body + meta
 //                                into $RUNNER_TEMP/tamys-comment/. The CONSUMER's
@@ -15,7 +15,6 @@ import { DefaultArtifactClient, type ArtifactClient } from '@actions/artifact';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import {
-    BASELINE_ARTIFACT_NAME,
     BASELINE_META_FILE,
     CONTEXT_VERSION,
     MAX_RENDERED_ARTIFACT_BYTES,
@@ -26,6 +25,7 @@ import {
     TAMYS_REPORT_JSON_FILE,
     TAMYS_REPORT_MARKDOWN_FILE,
     type BaselineMeta,
+    type BaselineSubject,
     type RenderedCommentMeta,
 } from './types.js';
 
@@ -35,19 +35,23 @@ const RETENTION_DAYS = 90;
 
 // Publishes the ingested log, the bytes this run diffed, PLUS the stamped provenance sidecar
 // (BASELINE_META_FILE) carrying this run's native CI verdict token — what the NEXT run forwards as
-// `--baseline-outcome` (ADR-17.D5: the outcome-bearing fixture pins its side-input) — and the
-// stack those bytes were declared under, which it forwards as `--baseline-transport` (DN-89.D38).
+// `--baseline-outcome` (ADR-17.D5: the outcome-bearing fixture pins its side-input) — the stack
+// those bytes were declared under, which it forwards as `--baseline-transport` (DN-89.D38), and the
+// subject those bytes are, which it checks against its own (DN-160.D1 (3)). `name` has no default:
+// a shared constant is how two jobs came to publish one lineage (DN-160.D1).
 export async function publishBaselineLog(
     logPath: string,
     outcomeToken: string,
     transport: readonly string[],
-    name: string = BASELINE_ARTIFACT_NAME,
+    subject: BaselineSubject,
+    name: string,
     client: Pick<ArtifactClient, 'uploadArtifact'> = new DefaultArtifactClient(),
 ): Promise<void> {
     const meta: BaselineMeta = {
         context_version: CONTEXT_VERSION,
         outcome_token: outcomeToken,
         transport: [...transport],
+        subject: { job: subject.job, capture: subject.capture },
     };
     const metaPath = path.join(path.dirname(logPath), BASELINE_META_FILE);
     await fs.writeFile(metaPath, JSON.stringify(meta), 'utf8');

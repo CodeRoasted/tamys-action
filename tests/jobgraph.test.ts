@@ -16,6 +16,7 @@ import {
     resolveBaselineJobGraph,
     resolveChangedJobGraph,
     type DeclaredJobWire,
+    type ListedJob,
     type RenderedJob,
     type ResolveJobGraphParams,
 } from '../src/jobgraph.js';
@@ -188,8 +189,9 @@ test('executedWorkflowCoordinate (A4): refuses each malformed input, with a reas
 
 // ── resolveChangedJobGraph — the read is at the coordinate, and nowhere else ─
 
-// A stand-in for the two REST calls the resolver makes, serving the workflow file PER COMMIT and
-// recording every call, so an arm can say both what was read and what was not.
+// A stand-in for the one REST call the resolver makes, serving the workflow file PER COMMIT and
+// recording every call, so an arm can say both what was read and what was not. The run's jobs
+// listing is handed in, read once by the entry (DN-160.D2), never read by the resolver itself.
 const REWIRED_AT: Record<string, string> = {
     [BASE_SHA]: ['jobs:', '  a: {}', '  b: {}', '  gate:', '    needs: [a]'].join('\n'),
     [EXECUTED_SHA]: ['jobs:', '  a: {}', '  b: {}', '  gate:', '    needs: [b]'].join('\n'),
@@ -208,7 +210,7 @@ const EDGE_FREE_LISTING = listedRows([
     { name: 'Merge coverage', conclusion: 'success' },
 ]);
 
-function standIn(listing: unknown[] = REWIRED_LISTING) {
+function standIn() {
     const calls: string[] = [];
     const octokit = {
         rest: {
@@ -220,24 +222,19 @@ function standIn(listing: unknown[] = REWIRED_LISTING) {
                     return { data: yaml };
                 },
             },
-            actions: { listJobsForWorkflowRun: 'listJobsForWorkflowRun' },
-        },
-        paginate: async (route: unknown) => {
-            calls.push(`paginate ${String(route)}`);
-            return listing;
         },
     };
     return { octokit: octokit as unknown as ResolveJobGraphParams['octokit'], calls };
 }
 
-async function resolveAt(sha: string | undefined, listing?: unknown[]) {
-    const { octokit, calls } = standIn(listing);
+async function resolveAt(sha: string | undefined, listing: unknown[] = REWIRED_LISTING) {
+    const { octokit, calls } = standIn();
     const lines: string[] = [];
     const graph = await resolveChangedJobGraph({
         octokit,
         owner: 'octo',
         repo: 'demo',
-        runId: 4242,
+        listing: { kind: 'listed', jobs: listing as ListedJob[] },
         workflow: executedWorkflowCoordinate({ GITHUB_WORKFLOW_REF: WORKFLOW_REF, GITHUB_WORKFLOW_SHA: sha }),
         info: (line) => lines.push(line),
     });
@@ -283,14 +280,9 @@ test('resolveChangedJobGraph (A2): a re-wired `needs:` folds along the executed 
     );
 });
 
-test('resolveChangedJobGraph (E1): an edge-free workflow\'s jobs carry their declared conclusions — the listing is read', async () => {
-    const { graph, calls, lines } = await resolveAt(EDGE_FREE_SHA, EDGE_FREE_LISTING);
+test('resolveChangedJobGraph (E1): an edge-free workflow\'s jobs carry their declared conclusions — the listing is joined', async () => {
+    const { graph, lines } = await resolveAt(EDGE_FREE_SHA, EDGE_FREE_LISTING);
     assert.ok(graph, `no graph for the edge-free workflow; log: ${JSON.stringify(lines)}`);
-    assert.deepEqual(
-        calls.filter((call) => call.startsWith('paginate')),
-        ['paginate listJobsForWorkflowRun'],
-        `the jobs listing of a workflow with no \`needs:\` edge was not read; calls: ${JSON.stringify(calls)}`,
-    );
     // The job the platform concluded `success` reaches the engine WITH that conclusion: the report
     // reads it to state a job's precedence over a failing row. Skipping the listing hands the
     // engine an empty display and no conclusion, which is what this arm exists to refuse.
@@ -315,6 +307,28 @@ test('resolveChangedJobGraph (A3): no runner commit ⇒ ABSENT, zero requests, o
     assert.deepEqual(calls, [], `no request may be made without the runner's commit; calls: ${JSON.stringify(calls)}`);
     assert.equal(lines.length, 1, `expected exactly one log line, got ${JSON.stringify(lines)}`);
     assert.match(lines[0]!, /^Tamys: no declared job graph — GITHUB_WORKFLOW_SHA is absent or empty\./);
+});
+
+// DN-160.D2: the listing is read once by the entry and handed in; a listing that could not be read
+// leaves the graph ABSENT with its reason, after the workflow file was read at the coordinate.
+test('resolveChangedJobGraph: a failed run listing ⇒ ABSENT, one log line naming the listing failure', async () => {
+    const { octokit, calls } = standIn();
+    const lines: string[] = [];
+    const graph = await resolveChangedJobGraph({
+        octokit,
+        owner: 'octo',
+        repo: 'demo',
+        listing: { kind: 'failed', error: new Error('Resource not accessible by integration') },
+        workflow: executedWorkflowCoordinate({ GITHUB_WORKFLOW_REF: WORKFLOW_REF, GITHUB_WORKFLOW_SHA: EXECUTED_SHA }),
+        info: (line) => lines.push(line),
+    });
+    assert.equal(graph, null, `expected ABSENT, got ${JSON.stringify(graph)}`);
+    assert.deepEqual(calls, [`getContent .github/workflows/ci.yml @ ${EXECUTED_SHA}`], `calls: ${JSON.stringify(calls)}`);
+    assert.equal(
+        lines.filter((line) => line === "Tamys: no declared job graph — the run's jobs listing failed (Resource not accessible by integration).").length,
+        1,
+        `log: ${JSON.stringify(lines)}`,
+    );
 });
 
 // ── The species travels, and the `<A> / X` containment is the caller's (DN-118.O3) ──

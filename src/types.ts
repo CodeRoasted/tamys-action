@@ -17,7 +17,7 @@
 // omitted when Neutral (only "regression"|"recovery" appear). Rows are surfaced
 // verbatim up to the comment's declared display caps (frame.ts), past which a
 // frame-controlled marker names what was left out; the full row is verbatim in the
-// `tamys-report` artifact. The Action never re-authors `summary`/`evidence` (contract § 1).
+// `tamys-report-*` artifact. The Action never re-authors `summary`/`evidence` (contract § 1).
 export interface RankedChange {
     kind: string;
     severity: string;
@@ -99,7 +99,7 @@ export interface BaselineProvenance {
     run_url: string;
     branch: string;
     created_at: string;
-    /** artifact: the artifact name; path: the file path. Absent for kind 'run'. */
+    /** run and artifact: the artifact name; path: the file path. */
     label?: string;
     /**
      * Set only when the baseline's producing run belongs to a workflow other than this run's
@@ -109,9 +109,16 @@ export interface BaselineProvenance {
      * workflow's runs, `path=` names no run), so only that kind ever carries it.
      */
     cross_workflow?: { baseline: string; changed: string };
+    /**
+     * Set only when the stored bytes are another job's than this run's (DN-160.D1 (3)): both
+     * subjects. Only `artifact=` carries it — a named baseline is the user's explicit choice, so a
+     * cross-job pair is DECLARED on the report, as a cross-workflow pair is; under `auto` and
+     * `branch=` the Action chose the pairing, so a differing subject is refused instead.
+     */
+    cross_subject?: { baseline: BaselineSubject; changed: BaselineSubject };
 }
 
-// Where this run's full report lives: the `tamys-report` workflow artifact the Action uploaded,
+// Where this run's full report lives: the `tamys-report-*` workflow artifact the Action uploaded,
 // on the run page at `run_url`. Set only once the upload succeeded, so the comment never points
 // at an artifact that does not exist.
 export interface ReportArtifact {
@@ -150,12 +157,15 @@ export interface TamysCommentContext {
 // verdict pair off `ReportSummary`, never a CI envelope flag.
 // 0.3.0: the baseline sidecar records the transport stack its stored bytes were declared under
 // (DN-89.D38 §4), a REQUIRED member; a sidecar without it is not a baseline.
-export const CONTEXT_VERSION = '0.3.0';
+// 0.4.0: the baseline sidecar records the subject its stored bytes are — the job and the capture
+// (DN-160.D1 (3)), a REQUIRED member; a sidecar without it is not a baseline.
+export const CONTEXT_VERSION = '0.4.0';
 
-// The self-published baseline store (contract § 3): every run uploads its ingested
-// log under this name; a PR resolves its baseline by pulling the same-named
-// artifact off the base branch's last green run. One name, both sides.
-export const BASELINE_ARTIFACT_NAME = 'tamys-baseline-log';
+// The self-published baseline store (contract § 3): every run uploads its ingested log under its
+// lineage's name, and the next run of the same job resolves it by that name. The default name is
+// DERIVED from the job (subject.ts, DN-160.D2) as `tamys-baseline-<slug>-<digest>`; this is only
+// its prefix. An explicit `baseline-name` is used verbatim.
+export const BASELINE_ARTIFACT_PREFIX = 'tamys-baseline';
 
 // The baseline artifact's stamped provenance sidecar (ADR-17.D5): the publishing
 // run stamps its NATIVE CI verdict token (verbatim — the adapter never translates) so
@@ -173,6 +183,16 @@ export interface BaselineMeta {
      * `--baseline-transport`.
      */
     transport: string[];
+    /** The subject the stored bytes are (DN-160.D1 (3)). REQUIRED since 0.4.0. */
+    subject: BaselineSubject;
+}
+
+// What a diff's bytes ARE: the rendered name of the job they were acquired from, and the `capture`
+// value that selected them (`''` for a `log:` file). The comment tag is not part of it: it changes
+// which comment a diff lands in, never a byte of the diff.
+export interface BaselineSubject {
+    job: string;
+    capture: string;
 }
 
 // The rows canon's transport catalogue declares (insight-canon `core/api/canon.transport.cppm`,
@@ -187,14 +207,12 @@ export const TRANSPORT_CATALOGUE: readonly string[] = [
 
 // The full report, uploaded on every run that has one (report.json as the engine wrote it, and
 // its markdown as report.md). The comment is a bounded projection of it; this artifact is where
-// a row the comment could not show in full is read whole. A `comment-tag` suffixes the name, so
-// two tagged Tamys steps in one job upload two artifacts instead of colliding on one.
-export const TAMYS_REPORT_ARTIFACT_NAME = 'tamys-report';
+// a row the comment could not show in full is read whole. Its name is derived over the same key as
+// the baseline's (subject.ts, DN-160.D2) as `tamys-report-<slug>-<digest>`, so the comment's
+// pointer names one artifact of its run; this is only its prefix.
+export const TAMYS_REPORT_ARTIFACT_PREFIX = 'tamys-report';
 export const TAMYS_REPORT_JSON_FILE = 'report.json';
 export const TAMYS_REPORT_MARKDOWN_FILE = 'report.md';
-export function reportArtifactName(tag?: string): string {
-    return tag ? `${TAMYS_REPORT_ARTIFACT_NAME}-${tag}` : TAMYS_REPORT_ARTIFACT_NAME;
-}
 
 // ── Fork-PR render → workflow_run post boundary (contract § 6.1) ─────────────
 //

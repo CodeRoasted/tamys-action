@@ -59,7 +59,7 @@ import {
     TamysReportUnreadableError,
     type TamysInvocation,
 } from '../src/tamys.js';
-import { fetchTargetJobLog, JOB_LOG_TRANSPORT, type FetchJobLogParams } from '../src/joblog.js';
+import { fetchTargetJobLog, JOB_LOG_TRANSPORT, type FetchJobLogParams, type JobRow } from '../src/joblog.js';
 import { narrationArgs, narrationEnv } from '../src/narrate.js';
 import { TRANSPORT_CATALOGUE } from '../src/types.js';
 import { CLAIM_BOUNDARY, ngramRefusalLine } from '../src/frame.js';
@@ -190,18 +190,16 @@ function stampedJobLog(failing: boolean): Buffer {
     return logOf(lines);
 }
 
-// The client the Action talks to, reduced to the two calls `fetchTargetJobLog` makes: one
-// completed job, and its log served as a byte stream when the body is requested unparsed —
-// otherwise decoded as text, the way the real client hands back a `text/plain` body.
-function servingClient(
-    served: Buffer,
-    job: Record<string, unknown> = { id: 1, name: 'build', status: 'completed', conclusion: 'success' },
-): FetchJobLogParams['octokit'] {
+// The one completed job the stub run lists.
+const BUILD_ROW: JobRow = { id: 1, name: 'build', status: 'completed', conclusion: 'success' };
+
+// The client the Action talks to, reduced to the one call `fetchTargetJobLog` makes: the job's log
+// served as a byte stream when the body is requested unparsed — otherwise decoded as text, the way
+// the real client hands back a `text/plain` body.
+function servingClient(served: Buffer): FetchJobLogParams['octokit'] {
     const client = {
-        paginate: async () => [job],
         rest: {
             actions: {
-                listJobsForWorkflowRun: async () => ({ data: { jobs: [job] } }),
                 downloadJobLogsForWorkflowRun: async (args: { request?: { parseSuccessResponseBody?: boolean } }) => ({
                     data:
                         args.request?.parseSuccessResponseBody === false
@@ -224,7 +222,7 @@ async function acquireStamped(failing: boolean): Promise<{ bytes: Uint8Array; tr
         octokit: servingClient(stampedJobLog(failing)),
         owner: 'preflight',
         repo: 'preflight',
-        runId: 1,
+        jobs: [BUILD_ROW],
         jobName: 'build',
         capture: 'auto',
     });
@@ -767,10 +765,10 @@ async function main(): Promise<void> {
             runner_name: 'GitHub Actions 51',
         };
         const acquired = await fetchTargetJobLog({
-            octokit: servingClient(oneJobLog(true), failedRow),
+            octokit: servingClient(oneJobLog(true)),
             owner: 'preflight',
             repo: 'preflight',
-            runId: 1,
+            jobs: [failedRow],
             jobName: 'build',
             capture: 'auto',
         });

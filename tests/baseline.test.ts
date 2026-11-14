@@ -9,6 +9,10 @@ import assert from 'node:assert/strict';
 
 import { MAX_ARTIFACT_PAGES, newestNamedArtifact, resolveBaseline, type ResolveParams } from '../src/baseline.js';
 
+// The subject this run diffs, and the lineage it resolves (DN-160.D1): the sidecars below stamp it,
+// so the resolution under test is the one a run of this job makes.
+const SUBJECT = { job: 'build / build', capture: '' };
+
 function params(octokit: unknown, over: Partial<ResolveParams> = {}): ResolveParams {
     return {
         octokit: octokit as ResolveParams['octokit'],
@@ -17,7 +21,7 @@ function params(octokit: unknown, over: Partial<ResolveParams> = {}): ResolvePar
         runId: 1,
         spec: { kind: 'auto' },
         contextBranch: 'main',
-        artifactName: 'tamys-baseline-log',
+        lineage: { artifactName: 'tamys-baseline-build-build-0123456789abcdef', subject: SUBJECT },
         workDir: '/tmp',
         ...over,
     };
@@ -142,10 +146,11 @@ test('branch=<name>: the run resolver targets the EXPLICIT branch, not the conte
 // what a sidecar published by such a run records.
 const JOB_LOG_STACK = ['utf8-bom-line-prefix', 'api-rfc3339-line-prefix'];
 
-// The sidecar the CURRENT Action publishes (DN-89.D38 §4): its context version, the publishing
-// run's native verdict token, and the ordered stack the stored bytes were declared under.
+// The sidecar the CURRENT Action publishes (DN-89.D38 §4, DN-160.D1 (3)): its context version, the
+// publishing run's native verdict token, the ordered stack the stored bytes were declared under, and
+// the subject they are — this run's job.
 function recordedSidecar(outcomeToken: string, transport: unknown = JOB_LOG_STACK): Record<string, unknown> {
-    return { context_version: '0.3.0', outcome_token: outcomeToken, transport };
+    return { context_version: '0.4.0', outcome_token: outcomeToken, transport, subject: SUBJECT };
 }
 
 // A named-baseline zip the artifact source can inflate: the log under `baseline.log` and, unless
@@ -446,7 +451,7 @@ function octokitWith(artifact: Record<string, unknown>, download: () => Promise<
 
 const liveArtifact = (over: Record<string, unknown> = {}) => ({
     id: 9,
-    name: 'tamys-baseline-log',
+    name: 'tamys-baseline-build-build-0123456789abcdef',
     expired: false,
     created_at: '2026-01-01T00:00:00Z',
     ...over,
@@ -873,7 +878,8 @@ function oneArtifactOctokit(zip: () => { data: ArrayBuffer }) {
     return { octokit: octokit as unknown as ResolveParams['octokit'], downloads };
 }
 
-test('A6: a published sidecar records context 0.3.0, the verdict token and the ordered stack', async () => {
+// DN-160.O1 arm 7's seed half: the sidecar a run publishes is 0.4.0 and names the subject its bytes are.
+test('A6 / DN-160.O1 arm 7: a published sidecar records context 0.4.0, the verdict token, the ordered stack and the subject', async () => {
     for (const transport of [JOB_LOG_STACK, []]) {
         const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'tamys-baseline-publish-'));
         const logPath = path.join(dir, 'changed.log');
@@ -887,8 +893,9 @@ test('A6: a published sidecar records context 0.3.0, the verdict token and the o
                 return { id: 1, size: 0 };
             },
         };
-        await publishBaselineLog(logPath, 'success', transport, 'tamys-baseline-log', client);
+        await publishBaselineLog(logPath, 'success', transport, SUBJECT, 'tamys-baseline-build-build-0123456789abcdef', client);
         assert.equal(uploads.length, 1, `uploads: ${uploads.length}`);
+        assert.equal(uploads[0]?.name, 'tamys-baseline-build-build-0123456789abcdef', 'the upload is under the name given');
         const files = uploads[0]?.files ?? {};
         assert.ok(
             files['changed.log']?.equals(STORED_WIRE_BYTES),
@@ -897,9 +904,10 @@ test('A6: a published sidecar records context 0.3.0, the verdict token and the o
         const sidecar = files['tamys-baseline-meta.json'];
         assert.ok(sidecar, `no sidecar uploaded; files: ${Object.keys(files).join(', ')}`);
         assert.deepEqual(JSON.parse(sidecar.toString('utf8')), {
-            context_version: '0.3.0',
+            context_version: '0.4.0',
             outcome_token: 'success',
             transport,
+            subject: { job: 'build / build', capture: '' },
         });
     }
 });
@@ -921,7 +929,9 @@ test('A6: a recorded stack rides back verbatim and in order, and the stored byte
     assert.deepEqual(declaredNone.transport, [], 'an empty recorded stack is none, never undeclared');
 });
 
-const UNRECORDED = /recorded no transport/;
+// A sidecar written before 0.4.0 names no job, so it is not compared, whatever else it records
+// (DN-160.D1 (3)); one that names this job is then held to its transport (DN-89.D38 §4).
+const UNRECORDED = /recorded no job/;
 
 const COLD_START_CELLS: ReadonlyArray<{
     name: string;
@@ -934,6 +944,11 @@ const COLD_START_CELLS: ReadonlyArray<{
         unrecorded: true,
     },
     { name: 'no sidecar at all', sidecar: 'absent', unrecorded: true },
+    {
+        name: 'a 0.3.0 sidecar, published before the subject was recorded (DN-160.O1 arm 7)',
+        sidecar: { context_version: '0.3.0', outcome_token: 'success', transport: JOB_LOG_STACK },
+        unrecorded: true,
+    },
     { name: 'a transport that is not a list', sidecar: recordedSidecar('success', 'none'), unrecorded: false },
     {
         name: 'a list holding something other than a name',
@@ -958,10 +973,10 @@ for (const cell of COLD_START_CELLS) {
         assert.equal(value, null, `${cell.name} must not resolve as a baseline`);
         const said = warnings.join('');
         if (cell.unrecorded) {
-            assert.match(said, UNRECORDED, `the warning must name the missing stack; it said: ${said}`);
+            assert.match(said, UNRECORDED, `the warning must name the missing job; it said: ${said}`);
         } else {
             assert.match(said, /transport/, `the warning must name the malformed stack; it said: ${said}`);
-            assert.doesNotMatch(said, UNRECORDED, `a malformed stack has its own reason; it said: ${said}`);
+            assert.doesNotMatch(said, /recorded no/, `a malformed stack has its own reason; it said: ${said}`);
         }
     });
 }
@@ -1045,10 +1060,9 @@ import { staleBaselineWarning } from '../src/baseline.js';
 
 test('STALE warning, run-resolved: names the run and branch searched, and the refs it does not read', () => {
     const text = staleBaselineWarning(
-        { kind: 'run', sha: 'abc', run_id: '40914562578', run_url: 'u', branch: 'main', created_at: 'x' },
+        { kind: 'run', sha: 'abc', run_id: '40914562578', run_url: 'u', branch: 'main', created_at: 'x', label: 'tamys-baseline-log' },
         210,
         '72h',
-        'tamys-baseline-log',
     );
     assert.ok(text.startsWith('Tamys: STALE baseline — 210h old, past the 72h bound.'), text);
     assert.ok(text.includes('run 40914562578'), `the resolved run is named: ${text}`);
@@ -1070,7 +1084,6 @@ test('STALE warning, artifact-resolved: the repo-wide claim IS measured there, a
         },
         100,
         '72h',
-        'tamys-baseline-log',
     );
     assert.ok(text.startsWith('Tamys: STALE baseline — 100h old, past the 72h bound.'), text);
     assert.ok(text.includes('newest live `tamys-baseline-main` artifact in the repository'), text);

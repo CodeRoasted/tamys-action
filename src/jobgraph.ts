@@ -630,11 +630,32 @@ export function executedWorkflowCoordinate(env: RunnerWorkflowEnv): WorkflowCoor
     return { kind: 'executed', path, sha: workflowSha };
 }
 
+// This run's jobs listing, read ONCE per run before the baseline is resolved (DN-160.D2): the
+// subject's job is named from it, and the changed side's graph joins the same rows. A failed read
+// is carried with its error, so each consumer states it in its own terms.
+export type RunJobs = { kind: 'listed'; jobs: ListedJob[] } | { kind: 'failed'; error: unknown };
+
+export async function readRunJobs(octokit: Octokit, owner: string, repo: string, runId: number): Promise<RunJobs> {
+    try {
+        const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRun, {
+            owner,
+            repo,
+            run_id: runId,
+            filter: 'latest',
+            per_page: 100,
+        });
+        return { kind: 'listed', jobs };
+    } catch (error) {
+        return { kind: 'failed', error };
+    }
+}
+
 export interface ResolveJobGraphParams {
     octokit: Octokit;
     owner: string;
     repo: string;
-    runId: number;
+    /** This run's jobs listing, as `readRunJobs` read it. */
+    listing: RunJobs;
     /** The executed workflow file, from `executedWorkflowCoordinate(process.env)`. */
     workflow: WorkflowCoordinate;
     info: (message: string) => void;
@@ -645,7 +666,7 @@ export interface ResolveJobGraphParams {
 export async function resolveChangedJobGraph(
     params: ResolveJobGraphParams,
 ): Promise<DeclaredJobWire[] | null> {
-    const { octokit, owner, repo, runId, workflow, info } = params;
+    const { octokit, owner, repo, listing, workflow, info } = params;
 
     if (workflow.kind === 'refused') {
         info(
@@ -675,19 +696,17 @@ export async function resolveChangedJobGraph(
             `this run executed): ${declared.length} jobs, ${edgeCount} \`needs:\` edges.`,
     );
 
-    // The listing is read whenever the workflow file resolved, `needs:` edge or none: a job's
+    // The listing is joined whenever the workflow file resolved, `needs:` edge or none: a job's
     // conclusion is the platform's own declaration, and the report reads it at the job's own grain
     // (a failing row on a job that concluded `success` states that job's precedence). A graph with
     // entries and no edge is an ordinary graph; the fold finds no aggregator in it and mints
     // nothing.
+    if (listing.kind === 'failed') {
+        info(`Tamys: no declared job graph — ${listingFailure(listing.error)}.`);
+        return null;
+    }
     try {
-        const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRun, {
-            owner,
-            repo,
-            run_id: runId,
-            per_page: 100,
-        });
-        return joinDeclaredJobs(declared, jobs.map(listingRow));
+        return joinDeclaredJobs(declared, listing.jobs.map(listingRow));
     } catch (error) {
         info(`Tamys: no declared job graph — ${listingFailure(error)}.`);
         return null;
@@ -813,7 +832,7 @@ export async function resolveBaselineJobGraph(
     }
 }
 
-type ListedJob = Awaited<ReturnType<Octokit['rest']['actions']['listJobsForWorkflowRun']>>['data']['jobs'][number];
+export type ListedJob = Awaited<ReturnType<Octokit['rest']['actions']['listJobsForWorkflowRun']>>['data']['jobs'][number];
 
 // The REST job object reduced to the fields `RenderedJob` reads.
 export function listingRow(job: ListedJob): RenderedJob {

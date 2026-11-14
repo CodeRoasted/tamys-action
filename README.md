@@ -170,7 +170,33 @@ the newest stored baseline repo-wide. Every part of that is overridable:
   listing changes while it is being read, the run is a cold start that names both counts, never a
   guess.
 - **`baseline-name`** names the artifact this run **publishes** its log under (and what
-  `auto`/`branch=` look for on the resolved run). Compose per-job / per-PR names with expressions.
+  `auto`/`branch=` look for on the resolved run). **Leave it unset and each job gets its own
+  baseline with no input**: the name is derived from the job this run diffs, as
+  `tamys-baseline-<slug>-<digest>`. The job is named as the run lists it, reusable-call prefix and
+  matrix values included (`build / build`, `test (ubuntu-24.04, 20)`); a `log:` step finds its own
+  row by its runner, a `target-job` step uses the job it read. The slug is that name (plus the
+  `capture` section and the `comment-tag` when set) cut to 40 characters for a reader; the digest,
+  the first 16 hex of SHA-256 over the job, the `capture` value and the tag, is the identity. The
+  log prints the name. Set `baseline-name` to pin a name of your own, used verbatim (a per-PR name
+  with an expression, for example).
+- **A baseline belongs to one job.** Every stored baseline records the job and `capture` value its
+  bytes are, and a run only diffs against its own job's. A run can hold several artifacts of one
+  name: one per job that stored it, and one per re-run attempt. `auto`/`branch=` reads them newest
+  first, at most **4**, and takes the first that is this job's. A job that finds its own behind
+  another job's still diffs, with a warning that the name is shared. If none of them is this job's,
+  or the 4 read are all another job's, or the run counts more of the name than one listing page
+  holds, the run is a cold start whose warning names the jobs found and the remedy: give each job
+  that runs Tamys its own `baseline-name`, or leave it unset so each job derives its own; a matrix
+  job whose `name:` is a literal needs the matrix value in its `name:` or in `baseline-name`.
+  `artifact=<name>` reads the same way inside the run that stored the newest artifact of the name:
+  this job's entry if there is one; else, when every entry is one other job's, the newest, with a
+  line under the comment's header naming both jobs; else a cold start, since nothing says which job
+  you meant.
+- **The job must be readable.** The job is read from the run's jobs listing, which needs
+  `actions: read`. If it cannot be read, or no single row in progress belongs to this step, the run
+  reads no baseline from the repository, publishes none and uploads no report, with one warning
+  naming the cause; a `path=` baseline still diffs. Known limit: on a self-hosted runner that runs
+  two jobs of one run one after the other, the Action could take the other job's row for its own.
 - **`publish-baseline`** controls seeding: `auto` (PRs always; pushes/tags green-gated) ·
   `always` · `never`.
 - **`baseline-max-age`** bounds the resolved baseline's **staleness** (`72h`, `7d`; **default
@@ -186,7 +212,8 @@ the newest stored baseline repo-wide. Every part of that is overridable:
   names what the selector searched: under `auto`/`branch=`, the branch it read and the refs it did
   not; under `artifact=`, the repository.
 - **`comment-tag`** namespaces the sticky comment, so two diffs in one job (vs `main` **and** vs
-  the PR's previous run) each keep their own comment.
+  the PR's previous run) each keep their own comment. It is part of the derived names too, so each
+  tagged step also keeps its own baseline and report.
 
 Named baselines decouple the diff from "this workflow ran on that branch": a `push`-to-`main` job
 seeds `tamys-baseline-main-build`; PRs and tag builds resolve it by name from any event. The
@@ -210,7 +237,7 @@ at the end:
 
 - **Each row's text is shown up to 1,024 bytes**, and its `where` location up to 256 bytes, both
   counted after escaping. A longer row ends in a marker saying how much was left out and which
-  template it is, e.g. `` … [+68,976 B not shown; template h:7f3a…, full text in the `tamys-report` artifact] ``.
+  template it is, e.g. `` … [+68,976 B not shown; template h:7f3a…, full text in the `tamys-report-build-build-30b02a20fda5ddbf-1` artifact] ``.
   A row within the cap is shown whole, with no marker.
 - **The full report is embedded in the collapsed block only when the whole comment then fits.**
   Otherwise the block holds one line giving the report's size and pointing at the artifact. It is
@@ -218,8 +245,11 @@ at the end:
   two-run claim boundary on every comment, and, when an n-gram window hit its key limit, the
   report's line saying so on a comment that does not embed the report (the Clean comment has no
   collapsed block).
-- **The full report is uploaded on every run that has one** as the **`tamys-report`** workflow
-  artifact (`tamys-report-<comment-tag>` with a `comment-tag`): `report.json` exactly as the engine
+- **The full report is uploaded on every run that has one** as the
+  **`tamys-report-<slug>-<digest>-<run attempt>`** workflow artifact, over the same job, `capture`
+  and `comment-tag` as the derived baseline name (an explicit `baseline-name` does not rename it),
+  plus the run attempt, so a re-run's report does not share a name with the first attempt's. The
+  log prints the name. It holds `report.json` exactly as the engine
   wrote it, and `report.md`, its markdown. The comment footer links to it. It is the content the
   comment already shows, so the fork `render` job uploads it too. If the upload fails, the step
   warns and the comment does not point at it; `report-path` still holds the report.
@@ -270,14 +300,15 @@ markers — plain echoed lines in any step:
 
 `capture:` selects `auto` (marked sections if any, else the whole log) | `off` | a
 section name — several named sections (`TAMYS_CAPTURE ci`, `TAMYS_CAPTURE release`) give
-independent diffs/lineages from one job, one Tamys step each, each with its own
-`baseline-name` (+ `comment-tag`). A marker is recognised behind the line's timestamp; the
+independent diffs/lineages from one job, one Tamys step each. Each step derives its own baseline
+name from its section, so it needs no `baseline-name` of its own; give each a `comment-tag` to keep
+its comment apart. A marker is recognised behind the line's timestamp; the
 lines a section selects reach the engine byte for byte, and the marker lines themselves do not.
 
-Each stored baseline records how its bytes were delivered, and the next run declares it for the
-baseline side. A baseline stored by an Action release before this record existed is not compared
-against: that run is a cold start whose warning says so, and it re-seeds the lineage — one cold
-start per baseline lineage, once.
+Each stored baseline records how its bytes were delivered and which job they are, and the next run
+declares the first for the baseline side and checks the second. A baseline stored by an Action
+release before these records existed is not compared against: that run is a cold start whose
+warning says so, and it re-seeds the lineage — one cold start per baseline lineage, once.
 
 **The in-job way** (`log:`) — a file holding the output you want diffed, captured
 however fits your job; Tamys then runs as a step of the build job itself. Always with
@@ -423,6 +454,25 @@ base-branch-aware "last green" resolution and a native PR/MR comment are platfor
 (see `bibles/tamys_action.md` § 9). The same curl-verify-run pattern ports to GitLab CI, Buildkite, or
 a local shell.
 
+## Upgrading within `v3`
+
+From `v3.0.0`, the default baseline and report names are per job (see
+[Choosing the baseline](#choosing-the-baseline--you-are-king)). What you meet on upgrade:
+
+1. **On the default name: one cold start per workflow, job and base branch.** The first run looks for
+   its job's derived name, finds none, and says so (first adoption). The base branch's next green push
+   seeds it; until then a pull request into that branch is a cold start too. `tamys-baseline-log` is not
+   read again and expires at the 90-day retention the Action sets. If you ran the Action in two jobs, one
+   job is no longer diffed against the other's log.
+2. **With an explicit `baseline-name`:** the name is unchanged, but its stored baseline does not record a
+   job. The first run is a cold start that says so, and re-seeds the lineage.
+3. **With a step of your own that downloads `tamys-baseline-log` or `tamys-report` by name:** it no
+   longer finds them. Pin the baseline's name with `baseline-name`. The report's name is printed in the
+   log and in the comment's footer.
+4. **With a token that cannot read the run's jobs:** no baseline is seeded and no report artifact is
+   uploaded, and the run's warning names `actions: read`. Such a token could not resolve a remote
+   baseline before either: the runs and artifacts reads need the same permission.
+
 ## Migrating from Sift (`v2` → `v3`)
 
 **Sift is now Tamys.** `v3` is the same Action under the product's new name, and every new engine ships to `v3`
@@ -435,9 +485,9 @@ only; `v2` stays on engine 1.10.11.
 3. Capture sections: `echo "SIFT_CAPTURE <name>"` … `echo "SIFT_CAPTURE_END"` become `TAMYS_CAPTURE` …
    `TAMYS_CAPTURE_END`. Left unchanged, `capture: auto` diffs the whole job log, and `capture: <name>` fails the
    run as a configuration error.
-4. **One cold start per baselined branch.** The baseline artifact is now `tamys-baseline-log`, so the first `v3`
-   run finds no baseline, says so, and diffs nothing. The next green run on the branch seeds it. A `v2` baseline
-   is not read.
+4. **One cold start per baselined branch.** `v3` does not read the `v2` baseline artifact (`sift-baseline-log`),
+   so the first `v3` run finds no baseline, says so, and diffs nothing. The next green run on the branch seeds
+   it. The name `v3` uses is in [Upgrading within `v3`](#upgrading-within-v3).
 5. **One duplicate comment per open pull request.** The PR comment's marker changed, so the first `v3` run on a
    pull request opened under `v2` posts a new comment beside the old one, which stops updating. You can delete the
    old one.
@@ -472,10 +522,10 @@ only; `v2` stays on engine 1.10.11.
 | `explain-model` | no | `claude-haiku-5-5` | The model named in the request. |
 | `explain-endpoint` | no | `https://api.anthropic.com/v1/messages` | Anthropic's Messages API by default; any OpenAI-compatible `/chat/completions` URL over https for another provider. |
 | `baseline` | no | `auto` | Baseline **selection**: `auto` \| `branch=<name>` \| `artifact=<name>` (named baseline, repo-wide) \| `path=<file>` \| `none`. Malformed values fail the run — never a silent fallback. See [Choosing the baseline](#choosing-the-baseline--you-are-king). |
-| `baseline-name` | no | `tamys-baseline-log` | Artifact name this run **publishes** its log under (and what `auto`/`branch=` resolvers look for). |
+| `baseline-name` | no | _(derived)_ | Artifact name this run **publishes** its log under (and what `auto`/`branch=` resolvers look for). Unset: derived from the job this run diffs, `tamys-baseline-<slug>-<digest>`, so each job keeps its own lineage. See [Choosing the baseline](#choosing-the-baseline--you-are-king). |
 | `publish-baseline` | no | `auto` | `auto` (PRs always seed; pushes/tags verdict-gated: FAILURE/UNSTABLE/ABORTED/CANCELLED never re-seeds) \| `always` \| `never`. |
 | `baseline-max-age` | no | `72h` | Staleness bound on the resolved baseline (`<n>h` \| `<n>d`; empty disables it). Exceeded ⇒ stale banner + warning annotation, **never a failed step** (still diffs, posts, seeds). Malformed values fail the run. See [Choosing the baseline](#choosing-the-baseline--you-are-king). |
-| `comment-tag` | no | _(none)_ | Namespaces the sticky comment (marker + title) so two tamys invocations in one job keep separate comments. |
+| `comment-tag` | no | _(none)_ | Namespaces the sticky comment (marker + title) so two tamys invocations in one job keep separate comments, and is part of the derived baseline and report names. |
 | `changed-outcome` | no | `auto` | This run's **native** CI verdict token, forwarded verbatim to the engine (class-aware: UNSTABLE is never folded into FAILURE). `auto` = `target-job`'s own conclusion; set `${{ needs.<job>.result }}` when sourcing via `log:`, else the engine reads the log's console tail / no verdict. |
 | `pr-comment` | no | `always` | `never` \| `regression` \| `drift` \| `always` — sticky PR comment at/above this verdict. Any other value fails the run. |
 | `commit-comment` | no | `never` | `never` \| `regression` \| `drift` \| `always` — commit comment on push at/above this verdict (needs `contents: write`). Any other value fails the run. |
@@ -498,7 +548,7 @@ Set on **every** run, whatever the comment config — branch on them in a later 
 | `outcome-regressed` | `true` when the run verdict got strictly worse (`Success < Unstable < Failure`; Aborted/Cancelled/Unknown excluded). |
 | `baseline-age-hours` | Resolved baseline's age in whole hours, from when its artifact was stored; empty when unknown (cold start, `path=` baseline, pre-sidecar artifact) — never 0-for-unknown. |
 | `baseline-stale` | `true` when a `baseline-max-age` bound is in force and the resolved baseline exceeds it, else `false`. Advisory — it never fails the step. |
-| `report-path` | Path to this run's `report.json` on a stable, cross-step location (empty on cold start). A later step on the **same runner** can narrate it with `tamys explain --report <path>` — same content as the comment; no credential. The same report is the run's `tamys-report` artifact ([The comment and the full report](#the-comment-and-the-full-report)). |
+| `report-path` | Path to this run's `report.json` on a stable, cross-step location (empty on cold start). A later step on the **same runner** can narrate it with `tamys explain --report <path>` — same content as the comment; no credential. The same report is the run's `tamys-report-*` artifact ([The comment and the full report](#the-comment-and-the-full-report)). |
 
 ## Architecture
 
@@ -522,7 +572,7 @@ root — never re-authored here.
 - `src/joblog.ts` — `target-job` log sourcing: job lookup, the job log as served bytes and their declared delivery stack, TAMYS_CAPTURE selection of whole lines, the native-conclusion token for `changed-outcome: auto`.
 - `src/jobgraph.ts` — the run's declared job graph: the workflow's declared jobs, read at the commit the runner names as executed (`GITHUB_WORKFLOW_SHA`), joined with the run's jobs listing (each job's conclusion, id, attempt and listed steps).
 - `src/tamys.ts` — engine invocation (`--format both`, `--fail-on`).
-- `src/comment.ts` — sticky-comment upsert. `src/artifact.ts` — baseline publish, the `tamys-report` upload, and the fork render/post transport.
+- `src/comment.ts` — sticky-comment upsert. `src/artifact.ts` — baseline publish, the `tamys-report-*` upload, and the fork render/post transport. `src/subject.ts` — the job a run diffs, and the artifact names derived from it.
 - `src/main.ts` — orchestration.
 
 ## Develop

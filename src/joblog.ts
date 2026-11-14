@@ -193,11 +193,21 @@ export function selectCapture(served: Uint8Array, capture: string): Uint8Array {
     return Buffer.concat(named.flatMap((section) => section.lines));
 }
 
+// One row of this run's jobs listing, reduced to what the lookup reads.
+export interface JobRow {
+    id: number;
+    name: string;
+    status: string;
+    conclusion?: string | null;
+    run_attempt?: number;
+}
+
 export interface FetchJobLogParams {
     octokit: Octokit;
     owner: string;
     repo: string;
-    runId: number;
+    /** This run's jobs listing, every page — read once per run (`readRunJobs`, DN-160.D2). */
+    jobs: readonly JobRow[];
     jobName: string;
     capture: string; // 'auto' | 'off' | <section name>
 }
@@ -254,18 +264,11 @@ export function acquiredGrainLine(grain: AcquiredGrain): string {
     );
 }
 
-// Resolve the job by name within THIS run and download its log. The current log
+// Resolve the job by name within THIS run's listing and download its log. The current log
 // is load-bearing (no log ⇒ no diff at all), so failures here THROW — unlike
 // baseline resolution, which degrades to a cold start.
 export async function fetchTargetJobLog(params: FetchJobLogParams): Promise<TargetJobLog> {
-    const { octokit, owner, repo, runId, jobName, capture } = params;
-
-    const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRun, {
-        owner,
-        repo,
-        run_id: runId,
-        per_page: 100,
-    });
+    const { octokit, owner, repo, jobs, jobName, capture } = params;
     // Exact name first; a reusable-workflow job renders under the rendering grammar ADR-22.D13
     // states (cited, never restated — tests/joblog.test.ts carries its mirror witness). The query
     // is this consumer's own: the user names the INNER job and the caller prefix is unknown here,

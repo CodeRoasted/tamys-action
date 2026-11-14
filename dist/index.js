@@ -62887,20 +62887,17 @@ import { promises as fs3 } from "fs";
 import * as path from "path";
 
 // src/types.ts
-var CONTEXT_VERSION = "0.3.0";
-var BASELINE_ARTIFACT_NAME = "tamys-baseline-log";
+var CONTEXT_VERSION = "0.4.0";
+var BASELINE_ARTIFACT_PREFIX = "tamys-baseline";
 var BASELINE_META_FILE = "tamys-baseline-meta.json";
 var TRANSPORT_CATALOGUE = [
   "api-rfc3339-line-prefix",
   "bracket-rfc3339-line-prefix",
   "utf8-bom-line-prefix"
 ];
-var TAMYS_REPORT_ARTIFACT_NAME = "tamys-report";
+var TAMYS_REPORT_ARTIFACT_PREFIX = "tamys-report";
 var TAMYS_REPORT_JSON_FILE = "report.json";
 var TAMYS_REPORT_MARKDOWN_FILE = "report.md";
-function reportArtifactName(tag) {
-  return tag ? `${TAMYS_REPORT_ARTIFACT_NAME}-${tag}` : TAMYS_REPORT_ARTIFACT_NAME;
-}
 var TAMYS_COMMENT_ARTIFACT_NAME = "tamys-comment";
 var TAMYS_COMMENT_DIR = "tamys-comment";
 var RENDERED_BODY_FILE = "comment-body.md";
@@ -62912,6 +62909,62 @@ var MAX_BASELINE_UNPACKED_BYTES = 256 * 1024 * 1024;
 var MAX_CHANGED_LOG_BYTES = 128 * 1024 * 1024;
 var MAX_ENGINE_LINE_BYTES = 4 * 1024 * 1024;
 var MAX_ENGINE_ALIGNMENT_CELLS = 2 ** 29;
+
+// src/subject.ts
+import { createHash } from "crypto";
+function ownJob(listing, runnerName) {
+  if (listing.kind === "failed") {
+    const message = listing.error instanceof Error ? listing.error.message : String(listing.error);
+    return { kind: "unestablished", cause: `the run's jobs listing could not be read (${message})` };
+  }
+  if (!runnerName) {
+    return { kind: "unestablished", cause: "RUNNER_NAME is absent or empty, so no listing row can be matched to this step" };
+  }
+  const rows = listing.jobs.filter((job) => job.status !== "completed" && job.runner_name === runnerName);
+  if (rows.length !== 1) {
+    const found = rows.length === 0 ? "no row" : `${rows.length} rows (${rows.map((job) => `"${job.name}"`).join(", ")})`;
+    return {
+      kind: "unestablished",
+      cause: `the run's jobs listing holds ${found} not completed on runner "${runnerName}", where exactly one names this step's job (${listing.jobs.length} rows listed)`
+    };
+  }
+  return { kind: "established", subject: { job: rows[0].name, capture: "" } };
+}
+function unestablishedWarning(cause) {
+  return `Tamys: this run's job could not be established \u2014 ${cause}. A baseline lineage belongs to one job, so this run reads no baseline from the repository, publishes none, and uploads no report artifact (a \`path=\` baseline still diffs). Grant the job \`actions: read\` so the Action can read the run's jobs listing.`;
+}
+function lineageKey(subject, commentTag) {
+  return JSON.stringify([subject.job, subject.capture, commentTag]);
+}
+var SLUG_REFUSED = /[^A-Za-z0-9._-]+/g;
+var SLUG_LENGTH = 40;
+var DIGEST_HEX = 16;
+function trimDashes(text) {
+  return text.replace(/^-+|-+$/g, "");
+}
+function slugOf(subject, commentTag) {
+  const parts = [subject.job];
+  if (subject.capture !== "" && subject.capture !== "auto" && subject.capture !== "off") parts.push(subject.capture);
+  if (commentTag !== "") parts.push(commentTag);
+  return trimDashes(trimDashes(parts.join(" ").replace(SLUG_REFUSED, "-")).slice(0, SLUG_LENGTH));
+}
+function derivedName(prefix2, subject, commentTag) {
+  const digest = createHash("sha256").update(lineageKey(subject, commentTag), "utf8").digest("hex").slice(0, DIGEST_HEX);
+  const slug = slugOf(subject, commentTag);
+  return slug === "" ? `${prefix2}-${digest}` : `${prefix2}-${slug}-${digest}`;
+}
+function derivedBaselineName(subject, commentTag) {
+  return derivedName(BASELINE_ARTIFACT_PREFIX, subject, commentTag);
+}
+function derivedReportName(subject, commentTag, runAttempt) {
+  return `${derivedName(TAMYS_REPORT_ARTIFACT_PREFIX, subject, commentTag)}-${runAttempt}`;
+}
+function subjectLabel(subject) {
+  return subject.capture === "" ? `job "${subject.job}"` : `job "${subject.job}" (capture: ${subject.capture})`;
+}
+function sameSubject(left, right) {
+  return left.job === right.job && left.capture === right.capture;
+}
 
 // src/baseline.ts
 function parseBaselineSpec(raw) {
@@ -62955,12 +63008,14 @@ function baselineAgeHours(createdAt, nowMs) {
   if (deltaMs < 0) return 0;
   return Math.floor(deltaMs / (60 * 60 * 1e3));
 }
-function staleBaselineWarning(meta, ageHours, bound, baselineName) {
+function staleBaselineWarning(meta, ageHours, bound) {
   const head = `Tamys: STALE baseline \u2014 ${ageHours}h old, past the ${bound} bound.`;
   const tail = "This diff compares against that aged snapshot and shrinks in meaning as the gap grows.";
   switch (meta.kind) {
-    case "run":
+    case "run": {
+      const baselineName = meta.label ?? "";
       return `${head} It is the \`${baselineName}\` stored by run ${meta.run_id}, the newest green run of this workflow on \`${meta.branch}\`. This resolver reads that branch's runs only: a \`${baselineName}\` stored since by a run on any other ref (a tag, another branch) is not considered \u2014 \`baseline: artifact=${baselineName}\` reads the newest one repo-wide. ${tail}`;
+    }
     case "artifact":
       return `${head} It is the newest live \`${meta.label ?? ""}\` artifact in the repository, stored by run ${meta.run_id}: no run has stored a newer one inside the bound (under \`publish-baseline: auto\` a run whose target job is red never seeds). ` + tail;
     case "path":
@@ -62990,8 +63045,13 @@ async function resolveBaseline(params) {
       // no provenance sidecar for a local file — console tail / Unknown
     };
   }
+  if (params.lineage === null) {
+    info("Tamys: no baseline is read from the repository \u2014 this run's job is not established.");
+    return null;
+  }
+  const lineage = params.lineage;
   try {
-    return await resolveRemoteStrict(params);
+    return await resolveRemoteStrict(params, lineage);
   } catch (error2) {
     if (error2 instanceof BaselineRefusal) {
       warning(`Tamys: ${error2.message} \u2014 proceeding cold start (current log only, no diff).`);
@@ -63006,8 +63066,9 @@ async function resolveBaseline(params) {
 }
 var BaselineRefusal = class extends Error {
 };
-async function resolveRemoteStrict(params) {
-  const { octokit, owner, repo, runId, spec, contextBranch, artifactName, workDir } = params;
+async function resolveRemoteStrict(params, lineage) {
+  const { octokit, owner, repo, runId, spec, contextBranch, workDir } = params;
+  const { artifactName, subject } = lineage;
   if (spec.kind === "artifact") {
     const scan = await newestNamedArtifact(octokit, owner, repo, spec.name, runId);
     if (scan.kind === "refused") {
@@ -63017,25 +63078,25 @@ async function resolveRemoteStrict(params) {
       info(`Tamys: no live \`${spec.name}\` baseline artifact in the repo yet \u2014 cold start.`);
       return null;
     }
-    const artifact2 = scan.artifact;
-    const producerRun = artifact2.workflow_run;
+    const producerRun = scan.artifact.workflow_run;
+    const where3 = producerRun ? `run ${producerRun.id}` : `artifact ${scan.artifact.id}'s run`;
+    const walk2 = await walkCandidates(octokit, owner, repo, scan.candidates, subject, true);
+    const chosen = namedChoice(walk2, spec.name, where3, subject);
     const meta2 = {
       kind: "artifact",
       sha: producerRun?.head_sha ?? "",
       run_id: producerRun ? String(producerRun.id) : "",
       run_url: producerRun ? `https://github.com/${owner}/${repo}/actions/runs/${producerRun.id}` : "",
       branch: producerRun?.head_branch ?? "",
-      created_at: artifact2.created_at ?? "",
+      created_at: chosen.candidate.artifact.created_at ?? "",
       label: spec.name
     };
     if (producerRun?.id !== void 0) {
       const crossWorkflow = await crossWorkflowOf(octokit, owner, repo, producerRun.id, runId);
       if (crossWorkflow) meta2.cross_workflow = crossWorkflow;
     }
-    return {
-      ...await extractBaseline(octokit, owner, repo, artifact2.id, workDir, artifact2.size_in_bytes),
-      meta: meta2
-    };
+    if (!sameSubject(chosen.stored, subject)) meta2.cross_subject = { baseline: chosen.stored, changed: subject };
+    return { ...await chosen.candidate.extract(workDir), meta: meta2 };
   }
   const branch = spec.kind === "branch" ? spec.branch : contextBranch;
   const thisRun = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
@@ -63045,21 +63106,31 @@ async function resolveRemoteStrict(params) {
     info(`Tamys: no green run of this workflow on \`${branch}\` yet \u2014 cold start.`);
     return null;
   }
-  const artifacts = await octokit.rest.actions.listWorkflowRunArtifacts({
+  const { data } = await octokit.rest.actions.listWorkflowRunArtifacts({
     owner,
     repo,
     run_id: baseRun.id,
-    per_page: 100
+    name: artifactName,
+    per_page: ARTIFACTS_PAGE_SIZE
   });
-  const artifact = artifacts.data.artifacts.find(
-    (candidate) => candidate.name === artifactName && !candidate.expired
-  );
-  if (!artifact) {
+  if (data.total_count > data.artifacts.length) {
+    throw new BaselineRefusal(
+      `green base run ${baseRun.id} counts ${data.total_count} artifacts named \`${artifactName}\` and one page holds ${data.artifacts.length}, so its candidates cannot be established. ${SHARED_NAME_REMEDY}`
+    );
+  }
+  const live = data.artifacts.filter((candidate) => candidate.name === artifactName && !candidate.expired);
+  if (live.length === 0) {
     info(
       `Tamys: green base run ${baseRun.id} has no live \`${artifactName}\` artifact (first adoption, or aged past retention) \u2014 cold start.`
     );
     return null;
   }
+  const where2 = `green base run ${baseRun.id}`;
+  const walk = await walkCandidates(octokit, owner, repo, newestFirst(live, artifactName), subject, false);
+  if (walk.kind !== "matched") {
+    throw new BaselineRefusal(unmatchedReason(walk, artifactName, where2, subject));
+  }
+  warnIfShared(walk, artifactName, where2, subject);
   const meta = {
     kind: "run",
     sha: baseRun.head_sha,
@@ -63069,12 +63140,79 @@ async function resolveRemoteStrict(params) {
     // The age stamp is the STORED snapshot's, as on the named-artifact path: a run keeps its
     // `created_at` across re-runs, so the run's stamp would age a re-run's fresh bytes by the
     // gap between attempts. The run's stamp orders runs (newerFirst); it does not date bytes.
-    created_at: artifact.created_at ?? ""
+    created_at: walk.candidate.artifact.created_at ?? "",
+    label: artifactName
   };
-  return {
-    ...await extractBaseline(octokit, owner, repo, artifact.id, workDir, artifact.size_in_bytes),
-    meta
-  };
+  return { ...await walk.candidate.extract(workDir), meta };
+}
+var SHARED_NAME_REMEDY = "Give each job that runs Tamys its own `baseline-name`, or leave it unset so each job derives its own; a matrix job whose `name:` is a literal needs the matrix value in its `name:` or in `baseline-name`";
+var MAX_LINEAGE_CANDIDATES = 4;
+function newestFirst(entries, name) {
+  if (entries.length <= 1) return [...entries];
+  const stamped = entries.map((entry) => {
+    const createdMs2 = Date.parse(entry.created_at ?? "");
+    if (Number.isNaN(createdMs2)) {
+      throw new BaselineRefusal(
+        `artifact ${entry.id} named \`${name}\` carries an unparseable created_at "${String(entry.created_at)}", so the newest cannot be established`
+      );
+    }
+    return { entry, createdMs: createdMs2 };
+  });
+  stamped.sort((left, right) => right.createdMs - left.createdMs || right.entry.id - left.entry.id);
+  return stamped.map(({ entry }) => entry);
+}
+async function walkCandidates(octokit, owner, repo, candidates, subject, keepNewest) {
+  const seen = [];
+  let newest = null;
+  const read = candidates.slice(0, MAX_LINEAGE_CANDIDATES);
+  for (const artifact of read) {
+    const opened = await openCandidate(octokit, owner, repo, artifact);
+    if (opened.stored !== null && sameSubject(opened.stored, subject)) {
+      return { kind: "matched", candidate: opened, others: seen.filter((each) => each !== null) };
+    }
+    seen.push(opened.stored);
+    if (keepNewest && newest === null) newest = opened;
+  }
+  return { kind: "unmatched", seen, newest, unread: candidates.length - read.length };
+}
+function distinctJobs(subjects) {
+  const distinct = [];
+  for (const each of subjects) {
+    if (each !== null && !distinct.some((known) => sameSubject(known, each))) distinct.push(each);
+  }
+  return distinct;
+}
+function unmatchedReason(walk, name, where2, subject) {
+  const read = walk.seen.length;
+  if (walk.unread > 0) {
+    return `${where2} holds ${read + walk.unread} live artifacts named \`${name}\`; the Action reads at most ${MAX_LINEAGE_CANDIDATES}, and none of those stores ${subjectLabel(subject)}. ${SHARED_NAME_REMEDY}`;
+  }
+  const stamped = distinctJobs(walk.seen);
+  if (stamped.length === 0) {
+    return `the ${read === 1 ? "artifact" : `${read} artifacts`} named \`${name}\` in ${where2} ${read === 1 ? "is" : "are"} not used: ${UNRECORDED_SUBJECT}`;
+  }
+  return `no artifact named \`${name}\` in ${where2} stores ${subjectLabel(subject)}: ${read === 1 ? "it stores" : `the ${read} read store`} ${stamped.map(subjectLabel).join(", ")}${stamped.length < read ? " and a log with no job recorded" : ""}. ${SHARED_NAME_REMEDY}`;
+}
+function warnIfShared(walk, name, where2, subject) {
+  const others = distinctJobs(walk.others);
+  if (others.length === 0) return;
+  warning(
+    `Tamys: the baseline name \`${name}\` is shared in ${where2}: ${subjectLabel(subject)} found its own baseline behind the one stored by ${others.map(subjectLabel).join(", ")}. ${SHARED_NAME_REMEDY}.`
+  );
+}
+function namedChoice(walk, name, where2, subject) {
+  if (walk.kind === "matched") {
+    warnIfShared(walk, name, where2, subject);
+    return { candidate: walk.candidate, stored: subject };
+  }
+  const stamped = distinctJobs(walk.seen);
+  const uniform = walk.unread === 0 && stamped.length === 1 && walk.seen.every((each) => each !== null);
+  if (!uniform || walk.newest === null) {
+    throw new BaselineRefusal(
+      stamped.length > 1 ? `the newest artifacts named \`${name}\` (${where2}) were stored by ${stamped.map(subjectLabel).join(", ")}, none of them ${subjectLabel(subject)}, so which one \`baseline: artifact=${name}\` means cannot be established. ${SHARED_NAME_REMEDY}` : unmatchedReason(walk, name, where2, subject)
+    );
+  }
+  return { candidate: walk.newest, stored: stamped[0] };
 }
 async function crossWorkflowOf(octokit, owner, repo, producerRunId, runId) {
   const thisRun = (await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
@@ -63177,7 +63315,10 @@ async function newestNamedArtifact(octokit, owner, repo, name, runId) {
       newest = { artifact, createdMs: createdMs2 };
     }
   }
-  return newest ? { kind: "found", artifact: newest.artifact } : { kind: "none" };
+  if (newest === null) return { kind: "none" };
+  const producer = newest.artifact.workflow_run?.id;
+  const siblings = producer === void 0 ? [newest.artifact] : listed.filter((artifact) => !artifact.expired && artifact.workflow_run?.id === producer);
+  return { kind: "found", artifact: newest.artifact, candidates: newestFirst(siblings, name) };
 }
 var UNRECORDED_TRANSPORT = "it was stored by an Action that recorded no transport for its bytes, so it is not comparable with this run (one cold start per baseline lineage; this run re-seeds it)";
 function recordedTransport(sidecar, artifactId) {
@@ -63192,7 +63333,17 @@ function recordedTransport(sidecar, artifactId) {
   }
   return recorded;
 }
-async function extractBaseline(octokit, owner, repo, artifactId, workDir, artifactSize) {
+var UNRECORDED_SUBJECT = "stored by an Action that recorded no job for its bytes, so not comparable with this run (one cold start per baseline lineage; this run re-seeds it)";
+function recordedSubject(sidecar) {
+  const recorded = sidecar["subject"];
+  const fields = typeof recorded === "object" && recorded !== null && !Array.isArray(recorded) ? recorded : {};
+  const job = fields["job"];
+  const capture = fields["capture"];
+  return typeof job === "string" && job !== "" && typeof capture === "string" ? { job, capture } : null;
+}
+async function openCandidate(octokit, owner, repo, artifact) {
+  const artifactId = artifact.id;
+  const artifactSize = artifact.size_in_bytes;
   if (artifactSize !== void 0 && artifactSize > MAX_BASELINE_ARTIFACT_BYTES) {
     throw new Error(
       `baseline artifact ${artifactId} is ${artifactSize}B compressed, over the ${MAX_BASELINE_ARTIFACT_BYTES}B cap \u2014 refusing to download`
@@ -63222,22 +63373,33 @@ async function extractBaseline(octokit, owner, repo, artifactId, workDir, artifa
   if (!logEntry) {
     throw new Error(`baseline artifact ${artifactId} carries no log file`);
   }
-  const logPath = path.join(workDir, "baseline.log");
-  await fs3.writeFile(logPath, logEntry.getData());
   const metaEntry = files.find((candidate) => path.basename(candidate.entryName) === BASELINE_META_FILE);
   let sidecar;
+  let unreadable = false;
   if (metaEntry) {
     try {
       sidecar = JSON.parse(metaEntry.getData().toString("utf8"));
     } catch {
-      throw new BaselineRefusal(
-        `baseline artifact ${artifactId} is not used: its ${BASELINE_META_FILE} is unreadable, so ` + UNRECORDED_TRANSPORT
-      );
+      unreadable = true;
     }
   }
-  const transport = recordedTransport(sidecar, artifactId);
-  const token = sidecar["outcome_token"];
-  return { logPath, outcomeToken: typeof token === "string" ? token : "", transport };
+  const recorded = typeof sidecar === "object" && sidecar !== null && !Array.isArray(sidecar) ? sidecar : {};
+  return {
+    artifact,
+    stored: unreadable ? null : recordedSubject(recorded),
+    async extract(workDir) {
+      if (unreadable) {
+        throw new BaselineRefusal(
+          `baseline artifact ${artifactId} is not used: its ${BASELINE_META_FILE} is unreadable, so ` + UNRECORDED_TRANSPORT
+        );
+      }
+      const transport = recordedTransport(sidecar, artifactId);
+      const logPath = path.join(workDir, "baseline.log");
+      await fs3.writeFile(logPath, logEntry.getData());
+      const token = recorded["outcome_token"];
+      return { logPath, outcomeToken: typeof token === "string" ? token : "", transport };
+    }
+  };
 }
 
 // src/joblog.ts
@@ -63356,13 +63518,7 @@ function acquiredGrainLine(grain) {
   return `Tamys: grain \u2014 acquired 1 job of the ${grain.runJobCount} this run lists ("${grain.jobName}"); ${unread} not read, so this diff covers that one job, not the whole run.`;
 }
 async function fetchTargetJobLog(params) {
-  const { octokit, owner, repo, runId, jobName, capture } = params;
-  const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRun, {
-    owner,
-    repo,
-    run_id: runId,
-    per_page: 100
-  });
+  const { octokit, owner, repo, jobs, jobName, capture } = params;
   let matches = jobs.filter((job2) => job2.name === jobName);
   if (matches.length === 0) {
     matches = jobs.filter((job2) => job2.name.endsWith(`/ ${jobName}`));
@@ -66804,8 +66960,22 @@ function executedWorkflowCoordinate(env) {
   }
   return { kind: "executed", path: path9, sha: workflowSha };
 }
+async function readRunJobs(octokit, owner, repo, runId) {
+  try {
+    const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRun, {
+      owner,
+      repo,
+      run_id: runId,
+      filter: "latest",
+      per_page: 100
+    });
+    return { kind: "listed", jobs };
+  } catch (error2) {
+    return { kind: "failed", error: error2 };
+  }
+}
 async function resolveChangedJobGraph(params) {
-  const { octokit, owner, repo, runId, workflow, info: info2 } = params;
+  const { octokit, owner, repo, listing, workflow, info: info2 } = params;
   if (workflow.kind === "refused") {
     info2(
       `Tamys: no declared job graph \u2014 ${workflow.reason}. The diff still runs; aggregator rows do not fold.`
@@ -66827,14 +66997,12 @@ async function resolveChangedJobGraph(params) {
   info2(
     `Tamys: declared job graph read from ${path9} at ${sha} (GITHUB_WORKFLOW_SHA, the commit this run executed): ${declared.length} jobs, ${edgeCount} \`needs:\` edges.`
   );
+  if (listing.kind === "failed") {
+    info2(`Tamys: no declared job graph \u2014 ${listingFailure(listing.error)}.`);
+    return null;
+  }
   try {
-    const jobs = await octokit.paginate(octokit.rest.actions.listJobsForWorkflowRun, {
-      owner,
-      repo,
-      run_id: runId,
-      per_page: 100
-    });
-    return joinDeclaredJobs(declared, jobs.map(listingRow));
+    return joinDeclaredJobs(declared, listing.jobs.map(listingRow));
   } catch (error2) {
     info2(`Tamys: no declared job graph \u2014 ${listingFailure(error2)}.`);
     return null;
@@ -67222,10 +67390,21 @@ function crossWorkflowLine(context5) {
 
 `;
 }
+function subjectPhrase(subject) {
+  const job = `job \`${escapeInline(subject.job)}\``;
+  return subject.capture === "" ? job : `${job} (capture \`${escapeInline(subject.capture)}\`)`;
+}
+function crossSubjectLine(context5) {
+  const pair = context5.baseline?.cross_subject;
+  if (!pair) return "";
+  return `> **Baseline from another job:** the baseline is the log of ${subjectPhrase(pair.baseline)}, this run diffs ${subjectPhrase(pair.changed)}. Every difference between the two jobs reads as a change.
+
+`;
+}
 function compose(report, context5, details) {
   const state3 = selectState(report);
   const header = context5.comment_tag ? `${HEADER} (${context5.comment_tag})` : HEADER;
-  const crossWorkflow = crossWorkflowLine(context5);
+  const crossWorkflow = crossSubjectLine(context5) + crossWorkflowLine(context5);
   const stale = context5.baseline_stale ? `${staleBanner(context5)}
 
 ` : "";
@@ -102511,11 +102690,12 @@ var client = new DefaultArtifactClient();
 import { promises as fs9 } from "fs";
 import * as path5 from "path";
 var RETENTION_DAYS = 90;
-async function publishBaselineLog(logPath, outcomeToken, transport, name = BASELINE_ARTIFACT_NAME, client2 = new DefaultArtifactClient()) {
+async function publishBaselineLog(logPath, outcomeToken, transport, subject, name, client2 = new DefaultArtifactClient()) {
   const meta = {
     context_version: CONTEXT_VERSION,
     outcome_token: outcomeToken,
-    transport: [...transport]
+    transport: [...transport],
+    subject: { job: subject.job, capture: subject.capture }
   };
   const metaPath = path5.join(path5.dirname(logPath), BASELINE_META_FILE);
   await fs9.writeFile(metaPath, JSON.stringify(meta), "utf8");
@@ -103212,6 +103392,8 @@ async function run() {
   const octokit = getOctokit(token);
   const { owner, repo } = context2.repo;
   const workDir = await fs14.mkdtemp(path8.join(os8.tmpdir(), "tamys-"));
+  const listing = await readRunJobs(octokit, owner, repo, context2.runId);
+  let subjectResolution;
   const changedLog = path8.join(workDir, "changed.log");
   let changedOutcome = rawChangedOutcome === "auto" ? "" : rawChangedOutcome;
   let grain;
@@ -103219,14 +103401,19 @@ async function run() {
   let changedLogProvenance;
   if (targetJob) {
     const capture = getInput("capture") || "auto";
+    if (listing.kind === "failed") {
+      const message = listing.error instanceof Error ? listing.error.message : String(listing.error);
+      throw new Error(`target-job "${targetJob}" cannot be looked up: the run's jobs listing could not be read (${message})`);
+    }
     const jobLog = await fetchTargetJobLog({
       octokit,
       owner,
       repo,
-      runId: context2.runId,
+      jobs: listing.jobs,
       jobName: targetJob,
       capture
     });
+    subjectResolution = { kind: "established", subject: { job: jobLog.jobName, capture } };
     await fs14.writeFile(changedLog, jobLog.bytes);
     changedTransport = jobLog.transport;
     changedLogProvenance = { jobId: jobLog.jobId, attempt: jobLog.runAttempt };
@@ -103248,6 +103435,7 @@ async function run() {
     await fs14.copyFile(logInput, changedLog);
     changedTransport = [];
     grain = { kind: "file", path: logInput };
+    subjectResolution = ownJob(listing, process.env.RUNNER_NAME);
   }
   info(acquiredGrainLine(grain));
   const pr = context2.payload.pull_request;
@@ -103256,9 +103444,30 @@ async function run() {
   const baseBranch = pr ? pr.base.ref : isTagRef ? defaultBranch : context2.ref.replace(/^refs\/heads\//, "");
   const headSha = pr ? pr.head.sha : context2.sha;
   const baselineSpec = parseBaselineSpec(getInput("baseline"));
-  const baselineName = getInput("baseline-name") || BASELINE_ARTIFACT_NAME;
   const publishMode = readPublishMode();
   const commentTag = getInput("comment-tag") || void 0;
+  let lineage = null;
+  let reportName = null;
+  if (subjectResolution.kind === "established") {
+    const { subject } = subjectResolution;
+    lineage = {
+      artifactName: getInput("baseline-name") || derivedBaselineName(subject, commentTag ?? ""),
+      subject
+    };
+    const runAttempt = context2.runAttempt;
+    if (Number.isSafeInteger(runAttempt) && runAttempt >= 1) {
+      reportName = derivedReportName(subject, commentTag ?? "", runAttempt);
+    } else {
+      warning(
+        `Tamys: GITHUB_RUN_ATTEMPT is not a run attempt ("${process.env.GITHUB_RUN_ATTEMPT ?? ""}"), so the report artifact cannot be named apart from another attempt's and is not uploaded.`
+      );
+    }
+    info(
+      `Tamys: this run diffs job "${subject.job}"${subject.capture ? ` (capture: ${subject.capture})` : ""}; its baseline lineage is \`${lineage.artifactName}\`` + (reportName === null ? "." : `, its report artifact \`${reportName}\`.`)
+    );
+  } else {
+    warning(unestablishedWarning(subjectResolution.cause));
+  }
   const maxAgeRaw = getInput("baseline-max-age");
   const maxAgeHours = parseMaxAgeHours(maxAgeRaw);
   const baseline = await resolveBaseline({
@@ -103268,13 +103477,13 @@ async function run() {
     runId: context2.runId,
     spec: baselineSpec,
     contextBranch: baseBranch,
-    artifactName: baselineName,
+    lineage,
     workDir
   });
   const ageHours = baseline ? baselineAgeHours(baseline.meta.created_at, Date.now()) : null;
   const baselineStale = baseline != null && maxAgeHours != null && ageHours != null && ageHours > maxAgeHours;
   if (baselineStale) {
-    warning(staleBaselineWarning(baseline.meta, ageHours, maxAgeRaw, baselineName));
+    warning(staleBaselineWarning(baseline.meta, ageHours, maxAgeRaw));
   } else if (maxAgeHours != null && baseline && ageHours == null) {
     warning(
       `Tamys: baseline-max-age=${maxAgeRaw} is set but the resolved baseline carries no created_at stamp (a \`path=\` baseline or a pre-sidecar artifact) \u2014 the bound cannot be checked. The age is UNKNOWN, not fresh.`
@@ -103302,7 +103511,7 @@ async function run() {
       octokit,
       owner,
       repo,
-      runId: context2.runId,
+      listing,
       workflow: executedWorkflowCoordinate(process.env),
       info
     });
@@ -103344,8 +103553,8 @@ async function run() {
     info(`Tamys: cold start \u2014 no baseline on \`${baseBranch}\` yet.`);
   }
   let reportArtifact;
-  if (report) {
-    const name = reportArtifactName(commentTag);
+  if (report && reportName !== null) {
+    const name = reportName;
     try {
       await publishReport(reportJsonPath, report.markdown, name);
       reportArtifact = {
@@ -103379,20 +103588,27 @@ async function run() {
   const badColdStartToken = report == null && changedOutcome !== "" && changedOutcome.toLowerCase() !== "success";
   const runOutcomeBad = badResolvedOutcome || badColdStartToken;
   const shouldSeed = publishMode === "always" ? true : publishMode === "never" ? false : pr ? true : !runOutcomeBad;
+  const seed = async () => {
+    if (lineage === null) return;
+    const { artifactName, subject } = lineage;
+    if (!shouldSeed) {
+      info(
+        `Tamys: publish-baseline=${publishMode}${runOutcomeBad ? " (run verdict not SUCCESS)" : ""} \u2014 kept the previous \`${artifactName}\` baseline (did not re-seed).`
+      );
+      return;
+    }
+    await tryWrite(
+      "publish the baseline artifact",
+      () => publishBaselineLog(changedLog, changedOutcome, changedTransport, subject, artifactName)
+    );
+  };
   if (mode === "render") {
     const shouldPost = shouldComment(state3, prComment);
     const runnerTemp = process.env.RUNNER_TEMP || os8.tmpdir();
     const commentDir = path8.join(runnerTemp, TAMYS_COMMENT_DIR);
     await writeRenderedComment(body3, headSha, commentDir, shouldPost);
     info(`Tamys: render mode \u2014 wrote the comment body (pr-comment=${prComment} \u21D2 post=${shouldPost}); the workflow uploads it.`);
-    if (shouldSeed) {
-      await tryWrite(
-        "publish the baseline artifact",
-        () => publishBaselineLog(changedLog, changedOutcome, changedTransport, baselineName)
-      );
-    } else {
-      info(`Tamys: publish-baseline=${publishMode}${runOutcomeBad ? " (run verdict not SUCCESS)" : ""} \u2014 did not re-seed \`${baselineName}\`.`);
-    }
+    await seed();
     return;
   }
   if (pr) {
@@ -103413,14 +103629,7 @@ async function run() {
   } else {
     info(`Tamys: push \u2014 commit-comment=${commitComment}, verdict ${state3} below threshold (result in the job summary).`);
   }
-  if (shouldSeed) {
-    await tryWrite(
-      "publish the baseline artifact",
-      () => publishBaselineLog(changedLog, changedOutcome, changedTransport, baselineName)
-    );
-  } else {
-    info(`Tamys: publish-baseline=${publishMode}${runOutcomeBad ? " (run verdict not SUCCESS)" : ""} \u2014 kept the previous \`${baselineName}\` baseline (did not re-seed).`);
-  }
+  await seed();
   if (gateExit !== 0) {
     setFailed(`Tamys gate (--fail-on ${failOn}) tripped \u2014 see the comment / job summary for what changed.`);
   }

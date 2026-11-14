@@ -19,14 +19,23 @@ import {
     resolveBaseline,
     staleBaselineWarning,
     type BaselineSpec,
+    type Lineage,
 } from './baseline.js';
 import { acquiredGrainLine, fetchTargetJobLog, type AcquiredGrain } from './joblog.js';
 import {
     executedWorkflowCoordinate,
+    readRunJobs,
     resolveBaselineJobGraph,
     resolveChangedJobGraph,
     type DeclaredJobWire,
 } from './jobgraph.js';
+import {
+    derivedBaselineName,
+    derivedReportName,
+    ownJob,
+    unestablishedWarning,
+    type SubjectResolution,
+} from './subject.js';
 import { upsertStickyComment, upsertCommitComment } from './comment.js';
 import { publishBaselineLog, publishReport, writeRenderedComment } from './artifact.js';
 import { renderComment } from './frame.js';
@@ -43,12 +52,10 @@ import {
     type CommentLevel,
 } from './verdict.js';
 import {
-    BASELINE_ARTIFACT_NAME,
     CONTEXT_VERSION,
     MAX_CHANGED_LOG_BYTES,
     MAX_ENGINE_LINE_BYTES,
     TAMYS_COMMENT_DIR,
-    reportArtifactName,
     type ReportArtifact,
     type TamysCommentContext,
     type TamysReport,
@@ -187,6 +194,12 @@ async function run(): Promise<void> {
     const { owner, repo } = github.context.repo;
 
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tamys-'));
+    // This run's jobs listing, read ONCE (DN-160.D2): the target job is looked up in it, this step's
+    // own job is named from it, and the changed side's graph joins the same rows.
+    const listing = await readRunJobs(octokit, owner, repo, github.context.runId);
+    // What this run diffs — the job and the capture — which names its baseline lineage and its
+    // report (subject.ts, DN-160.D1).
+    let subjectResolution: SubjectResolution;
     const changedLog = path.join(workDir, 'changed.log');
     // The native verdict token this run forwards to the engine ('' = none — the
     // engine's run-outcome ladder (ADR-17.D5) falls to the console tail, then Unknown).
@@ -206,14 +219,19 @@ async function run(): Promise<void> {
         // capture sections selected. Load-bearing — a failure here fails the step (the
         // caller's continue-on-error keeps the advisory guarantee).
         const capture = core.getInput('capture') || 'auto';
+        if (listing.kind === 'failed') {
+            const message = listing.error instanceof Error ? listing.error.message : String(listing.error);
+            throw new Error(`target-job "${targetJob}" cannot be looked up: the run's jobs listing could not be read (${message})`);
+        }
         const jobLog = await fetchTargetJobLog({
             octokit,
             owner,
             repo,
-            runId: github.context.runId,
+            jobs: listing.jobs,
             jobName: targetJob,
             capture,
         });
+        subjectResolution = { kind: 'established', subject: { job: jobLog.jobName, capture } };
         await fs.writeFile(changedLog, jobLog.bytes);
         changedTransport = jobLog.transport;
         changedLogProvenance = { jobId: jobLog.jobId, attempt: jobLog.runAttempt };
@@ -245,6 +263,8 @@ async function run(): Promise<void> {
         // A file the workflow wrote carries no delivery layer (ADR-14.D9): declared none.
         changedTransport = [];
         grain = { kind: 'file', path: logInput };
+        // A `log:` file is this step's own job's bytes: its row is found by its runner.
+        subjectResolution = ownJob(listing, process.env.RUNNER_NAME);
     }
     core.info(acquiredGrainLine(grain));
 
@@ -267,9 +287,38 @@ async function run(): Promise<void> {
     // Baseline selection + publication — the user is King of the baseline. A malformed
     // selector throws here (config error → failed run), never a silent auto fallback.
     const baselineSpec = parseBaselineSpec(core.getInput('baseline'));
-    const baselineName = core.getInput('baseline-name') || BASELINE_ARTIFACT_NAME;
     const publishMode = readPublishMode();
     const commentTag = core.getInput('comment-tag') || undefined;
+    // The lineage: an explicit `baseline-name` verbatim (the user is King of the baseline), else the
+    // name derived from the subject; the report's name is always derived. A run whose job is not
+    // established has neither, and says why once (DN-160.D1 (4)).
+    let lineage: Lineage | null = null;
+    let reportName: string | null = null;
+    if (subjectResolution.kind === 'established') {
+        const { subject } = subjectResolution;
+        lineage = {
+            artifactName: core.getInput('baseline-name') || derivedBaselineName(subject, commentTag ?? ''),
+            subject,
+        };
+        // The runner states the attempt; a run that does not cannot name its report apart from another
+        // attempt's, so it uploads none and says so.
+        const runAttempt = github.context.runAttempt;
+        if (Number.isSafeInteger(runAttempt) && runAttempt >= 1) {
+            reportName = derivedReportName(subject, commentTag ?? '', runAttempt);
+        } else {
+            core.warning(
+                `Tamys: GITHUB_RUN_ATTEMPT is not a run attempt ("${process.env.GITHUB_RUN_ATTEMPT ?? ''}"), so the ` +
+                    'report artifact cannot be named apart from another attempt\'s and is not uploaded.',
+            );
+        }
+        core.info(
+            `Tamys: this run diffs job "${subject.job}"${subject.capture ? ` (capture: ${subject.capture})` : ''}; ` +
+                `its baseline lineage is \`${lineage.artifactName}\`` +
+                (reportName === null ? '.' : `, its report artifact \`${reportName}\`.`),
+        );
+    } else {
+        core.warning(unestablishedWarning(subjectResolution.cause));
+    }
 
     // The staleness bound (parsed BEFORE resolution — a malformed bound is a config
     // error and must fail before any API work, like a malformed baseline selector).
@@ -284,7 +333,7 @@ async function run(): Promise<void> {
         runId: github.context.runId,
         spec: baselineSpec,
         contextBranch: baseBranch,
-        artifactName: baselineName,
+        lineage,
         workDir,
     });
 
@@ -300,7 +349,7 @@ async function run(): Promise<void> {
     const baselineStale =
         baseline != null && maxAgeHours != null && ageHours != null && ageHours > maxAgeHours;
     if (baselineStale) {
-        core.warning(staleBaselineWarning(baseline.meta, ageHours, maxAgeRaw, baselineName));
+        core.warning(staleBaselineWarning(baseline.meta, ageHours, maxAgeRaw));
     } else if (maxAgeHours != null && baseline && ageHours == null) {
         core.warning(
             `Tamys: baseline-max-age=${maxAgeRaw} is set but the resolved baseline carries no ` +
@@ -346,7 +395,7 @@ async function run(): Promise<void> {
             octokit,
             owner,
             repo,
-            runId: github.context.runId,
+            listing,
             workflow: executedWorkflowCoordinate(process.env),
             info: core.info,
         });
@@ -401,8 +450,8 @@ async function run(): Promise<void> {
     // comment without the pointer, never a pointer to nothing. A failure is a warning, never a
     // failed step — the comment, summary and gate do not depend on it.
     let reportArtifact: ReportArtifact | undefined;
-    if (report) {
-        const name = reportArtifactName(commentTag);
+    if (report && reportName !== null) {
+        const name = reportName;
         try {
             await publishReport(reportJsonPath, report.markdown, name);
             reportArtifact = {
@@ -469,6 +518,22 @@ async function run(): Promise<void> {
     const runOutcomeBad = badResolvedOutcome || badColdStartToken;
     const shouldSeed =
         publishMode === 'always' ? true : publishMode === 'never' ? false : pr ? true : !runOutcomeBad;
+    // Seeds the lineage under its name with the subject stamped. A run whose job is not established
+    // has no lineage and seeds nothing; its warning already said so (DN-160.D1 (4)).
+    const seed = async (): Promise<void> => {
+        if (lineage === null) return;
+        const { artifactName, subject } = lineage;
+        if (!shouldSeed) {
+            core.info(
+                `Tamys: publish-baseline=${publishMode}${runOutcomeBad ? ' (run verdict not SUCCESS)' : ''} — kept ` +
+                    `the previous \`${artifactName}\` baseline (did not re-seed).`,
+            );
+            return;
+        }
+        await tryWrite('publish the baseline artifact', () =>
+            publishBaselineLog(changedLog, changedOutcome, changedTransport, subject, artifactName),
+        );
+    };
 
     if (mode === 'render') {
         // Fork build job (contract § 6.1): write the escaped body for the workflow_run poster; NEVER
@@ -481,13 +546,7 @@ async function run(): Promise<void> {
         const commentDir = path.join(runnerTemp, TAMYS_COMMENT_DIR);
         await writeRenderedComment(body, headSha, commentDir, shouldPost);
         core.info(`Tamys: render mode — wrote the comment body (pr-comment=${prComment} ⇒ post=${shouldPost}); the workflow uploads it.`);
-        if (shouldSeed) {
-            await tryWrite('publish the baseline artifact', () =>
-                publishBaselineLog(changedLog, changedOutcome, changedTransport, baselineName),
-            );
-        } else {
-            core.info(`Tamys: publish-baseline=${publishMode}${runOutcomeBad ? ' (run verdict not SUCCESS)' : ''} — did not re-seed \`${baselineName}\`.`);
-        }
+        await seed();
         return;
     }
 
@@ -510,14 +569,8 @@ async function run(): Promise<void> {
         core.info(`Tamys: push — commit-comment=${commitComment}, verdict ${state} below threshold (result in the job summary).`);
     }
 
-    // Seed the next baseline under `baseline-name` (rule computed above).
-    if (shouldSeed) {
-        await tryWrite('publish the baseline artifact', () =>
-            publishBaselineLog(changedLog, changedOutcome, changedTransport, baselineName),
-        );
-    } else {
-        core.info(`Tamys: publish-baseline=${publishMode}${runOutcomeBad ? ' (run verdict not SUCCESS)' : ''} — kept the previous \`${baselineName}\` baseline (did not re-seed).`);
-    }
+    // Seed the next baseline under the lineage's name (rule computed above).
+    await seed();
 
     // Advisory gate (contract § 8): the exit code carries the verdict; the comment never says "we
     // blocked your merge". Applies to PR and push alike; render mode returned above (failing it

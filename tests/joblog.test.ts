@@ -82,10 +82,8 @@ function fetchParams(
     chunkBytes: number = CHUNK_BYTES,
 ): FetchJobLogParams {
     const octokit = {
-        paginate: async () => jobs,
         rest: {
             actions: {
-                listJobsForWorkflowRun: async () => ({ data: { jobs } }),
                 downloadJobLogsForWorkflowRun: async (args: DownloadRequest) => {
                     requests.push(args);
                     const served = typeof log === 'function' ? log(args.job_id) : log;
@@ -103,7 +101,7 @@ function fetchParams(
         octokit: octokit as unknown as FetchJobLogParams['octokit'],
         owner: 'o',
         repo: 'r',
-        runId: 1,
+        jobs,
         jobName: 'build',
         capture: 'auto',
         ...over,

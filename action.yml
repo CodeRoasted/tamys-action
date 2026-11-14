@@ -66,10 +66,19 @@ inputs:
   baseline-name:
     description: >-
       The artifact name this run PUBLISHES its ingested log under (the `create_baseline` half), and
-      the artifact name the `auto`/`branch=` resolvers look for on the resolved run. Compose per-job /
-      per-PR names with expressions, e.g. `tamys-baseline-build-pr-123`.
+      the artifact name the `auto`/`branch=` resolvers look for on the resolved run. Leave it unset
+      (the default) and the name is DERIVED from the job this run diffs, so each job that runs Tamys
+      keeps its own baseline lineage with no input: `tamys-baseline-<slug>-<digest>`, the slug read
+      off the job's rendered name (its reusable-call prefix and matrix values included), the
+      `capture` section and the `comment-tag`, the digest the first 16 hex of SHA-256 over them. The
+      derived name is printed in the log. Set it to pin a name of your own, used verbatim. A
+      stored baseline records its job, and only this job's entry of the name is diffed: when two
+      jobs share a name, each finds its own, newest first, with a warning; when none of the run's
+      entries is this job's, the run is a cold start that says so. Give each job that runs Tamys
+      its own `baseline-name`, or leave it unset so each job derives its own; a matrix job whose
+      `name:` is a literal needs the matrix value in its `name:` or in `baseline-name`.
     required: false
-    default: 'tamys-baseline-log'
+    default: ''
   publish-baseline:
     description: >-
       When this run publishes `baseline-name`: `auto` (default — PRs always seed; pushes/tags are
@@ -212,14 +221,17 @@ outputs:
       report). A later step on the SAME runner can narrate it with
       `tamys explain --report <path>` — the same content already in the comment/summary;
       no credential (contract § 3.6). The same report is also uploaded on every run that has one
-      as the `tamys-report` workflow artifact (`tamys-report-<comment-tag>` when tagged), which the
-      comment points at wherever it shows a row or the full report cut to GitHub's size limit.
+      as the `tamys-report-<slug>-<digest>-<run attempt>` workflow artifact, named over the same key
+      as the derived baseline name plus the run attempt, which the comment points at wherever it
+      shows a row or the full report cut to GitHub's size limit.
 
 # Permissions the caller workflow must grant (contract § 6):
-#   actions: read       — resolve the base branch's last green run + its artifact
+#   actions: read       — read this run's jobs listing (which names the job this run diffs, and
+#                         so its baseline lineage), resolve the base branch's last green run + its
+#                         artifact. Without it no baseline is read or published.
 #   pull-requests: write — post/update the sticky comment (PR runs)
 #   actions: write      — upload this run's baseline-log artifact
-# The `tamys-report` artifact is uploaded through the same @actions/artifact client as the
+# The `tamys-report-*` artifact is uploaded through the same @actions/artifact client as the
 # baseline-log artifact (the runner's runtime token, not `github-token`), in the fork
 # `render` job too.
 #   contents: write     — ONLY if commit-comment is set (push-mode commit comments); else omit

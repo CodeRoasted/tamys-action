@@ -30,7 +30,9 @@ import {
     MAX_BASELINE_UNPACKED_BYTES,
     TRANSPORT_CATALOGUE,
     type BaselineProvenance,
+    type BaselineSubject,
 } from './types.js';
+import { sameSubject, subjectLabel } from './subject.js';
 
 type Octokit = ReturnType<typeof getOctokit>;
 
@@ -106,18 +108,19 @@ export function staleBaselineWarning(
     meta: BaselineProvenance,
     ageHours: number,
     bound: string,
-    baselineName: string,
 ): string {
     const head = `Tamys: STALE baseline — ${ageHours}h old, past the ${bound} bound.`;
     const tail = 'This diff compares against that aged snapshot and shrinks in meaning as the gap grows.';
     switch (meta.kind) {
-        case 'run':
+        case 'run': {
+            const baselineName = meta.label ?? '';
             return (
                 `${head} It is the \`${baselineName}\` stored by run ${meta.run_id}, the newest green run of ` +
                 `this workflow on \`${meta.branch}\`. This resolver reads that branch's runs only: a ` +
                 `\`${baselineName}\` stored since by a run on any other ref (a tag, another branch) is not ` +
                 `considered — \`baseline: artifact=${baselineName}\` reads the newest one repo-wide. ${tail}`
             );
+        }
         case 'artifact':
             return (
                 `${head} It is the newest live \`${meta.label ?? ''}\` artifact in the repository, stored by ` +
@@ -157,9 +160,19 @@ export interface ResolveParams {
     spec: BaselineSpec;
     /** Branch for `auto`: PR base / pushed branch / default branch on tag refs. */
     contextBranch: string;
-    /** Artifact name the branch-run resolvers look for (= what this pipeline publishes). */
-    artifactName: string;
+    /**
+     * The lineage this run belongs to: the artifact name the branch-run resolvers look for (= what
+     * this pipeline publishes) and the subject the stored bytes must be. Null when this run's job
+     * is not established (DN-160.D1 (4)): no remote baseline is then read, and `path=` and `none`
+     * are unaffected.
+     */
+    lineage: Lineage | null;
     workDir: string;
+}
+
+export interface Lineage {
+    artifactName: string;
+    subject: BaselineSubject;
 }
 
 export async function resolveBaseline(params: ResolveParams): Promise<ResolvedBaseline | null> {
@@ -186,13 +199,18 @@ export async function resolveBaseline(params: ResolveParams): Promise<ResolvedBa
             outcomeToken: '', // no provenance sidecar for a local file — console tail / Unknown
         };
     }
+    if (params.lineage === null) {
+        core.info('Tamys: no baseline is read from the repository — this run\'s job is not established.');
+        return null;
+    }
+    const lineage = params.lineage;
     // Remote resolution is ADVISORY (contract § 3, § 6 fork posture). A fork PR gets a
     // READ-ONLY token that 403s on the runs/artifacts API, and any transient API/transport
     // error must degrade to an honest cold start — NEVER fail the render/comment job (which
     // would turn a green PR red). The diff is an enhancement; its absence is a cold start,
     // not an error. The strict resolver below throws on such errors; we swallow them here.
     try {
-        return await resolveRemoteStrict(params);
+        return await resolveRemoteStrict(params, lineage);
     } catch (error) {
         if (error instanceof BaselineRefusal) {
             core.warning(`Tamys: ${error.message} — proceeding cold start (current log only, no diff).`);
@@ -215,8 +233,9 @@ class BaselineRefusal extends Error {}
 // Strict resolution: THROWS on an API/transport error (the caller degrades to cold start).
 // Returns null for the legitimately-empty cases (no green base run, no/expired/empty baseline
 // artifact) — those are normal cold starts, distinct from an error.
-async function resolveRemoteStrict(params: ResolveParams): Promise<ResolvedBaseline | null> {
-    const { octokit, owner, repo, runId, spec, contextBranch, artifactName, workDir } = params;
+async function resolveRemoteStrict(params: ResolveParams, lineage: Lineage): Promise<ResolvedBaseline | null> {
+    const { octokit, owner, repo, runId, spec, contextBranch, workDir } = params;
+    const { artifactName, subject } = lineage;
 
     if (spec.kind === 'artifact') {
         // Named baseline: the newest live artifact with that exact name, repo-wide, never one
@@ -229,8 +248,10 @@ async function resolveRemoteStrict(params: ResolveParams): Promise<ResolvedBasel
             core.info(`Tamys: no live \`${spec.name}\` baseline artifact in the repo yet — cold start.`);
             return null;
         }
-        const artifact = scan.artifact;
-        const producerRun = artifact.workflow_run;
+        const producerRun = scan.artifact.workflow_run;
+        const where = producerRun ? `run ${producerRun.id}` : `artifact ${scan.artifact.id}'s run`;
+        const walk = await walkCandidates(octokit, owner, repo, scan.candidates, subject, true);
+        const chosen = namedChoice(walk, spec.name, where, subject);
         const meta: BaselineProvenance = {
             kind: 'artifact',
             sha: producerRun?.head_sha ?? '',
@@ -239,7 +260,7 @@ async function resolveRemoteStrict(params: ResolveParams): Promise<ResolvedBasel
                 ? `https://github.com/${owner}/${repo}/actions/runs/${producerRun.id}`
                 : '',
             branch: producerRun?.head_branch ?? '',
-            created_at: artifact.created_at ?? '',
+            created_at: chosen.candidate.artifact.created_at ?? '',
             label: spec.name,
         };
         // An artifact the listing names no producing run for has no workflow to compare: its
@@ -248,10 +269,10 @@ async function resolveRemoteStrict(params: ResolveParams): Promise<ResolvedBasel
             const crossWorkflow = await crossWorkflowOf(octokit, owner, repo, producerRun.id, runId);
             if (crossWorkflow) meta.cross_workflow = crossWorkflow;
         }
-        return {
-            ...(await extractBaseline(octokit, owner, repo, artifact.id, workDir, artifact.size_in_bytes)),
-            meta,
-        };
+        // A named baseline is the user's explicit choice: another job's bytes are diffed and
+        // DECLARED, as another workflow's are (DN-160.D1 (3)).
+        if (!sameSubject(chosen.stored, subject)) meta.cross_subject = { baseline: chosen.stored, changed: subject };
+        return { ...(await chosen.candidate.extract(workDir)), meta };
     }
 
     // Branch-run resolution (auto / branch=<name>): the last green run of THE SAME
@@ -267,23 +288,38 @@ async function resolveRemoteStrict(params: ResolveParams): Promise<ResolvedBasel
         return null;
     }
 
-    const artifacts = await octokit.rest.actions.listWorkflowRunArtifacts({
+    // Every live entry of the name the base run holds: a run holds one per job that stored it, and
+    // one per re-run attempt of each (DN-160.D4). The listing is read by name, so one page covers
+    // them unless a page cannot hold them all — then the candidates are not established.
+    const { data } = await octokit.rest.actions.listWorkflowRunArtifacts({
         owner,
         repo,
         run_id: baseRun.id,
-        per_page: 100,
+        name: artifactName,
+        per_page: ARTIFACTS_PAGE_SIZE,
     });
-    const artifact = artifacts.data.artifacts.find(
-        (candidate) => candidate.name === artifactName && !candidate.expired,
-    );
-    if (!artifact) {
+    if (data.total_count > data.artifacts.length) {
+        throw new BaselineRefusal(
+            `green base run ${baseRun.id} counts ${data.total_count} artifacts named \`${artifactName}\` and one page ` +
+                `holds ${data.artifacts.length}, so its candidates cannot be established. ${SHARED_NAME_REMEDY}`,
+        );
+    }
+    const live = data.artifacts.filter((candidate) => candidate.name === artifactName && !candidate.expired);
+    if (live.length === 0) {
         core.info(
             `Tamys: green base run ${baseRun.id} has no live \`${artifactName}\` artifact ` +
                 `(first adoption, or aged past retention) — cold start.`,
         );
         return null;
     }
-
+    const where = `green base run ${baseRun.id}`;
+    const walk = await walkCandidates(octokit, owner, repo, newestFirst(live, artifactName), subject, false);
+    // The Action chose this pairing, so a walk that finds no entry of this job is the Action's to
+    // refuse, never a diff to declare (DN-160.D1 (3), DN-160.D4 (4)).
+    if (walk.kind !== 'matched') {
+        throw new BaselineRefusal(unmatchedReason(walk, artifactName, where, subject));
+    }
+    warnIfShared(walk, artifactName, where, subject);
     const meta: BaselineProvenance = {
         kind: 'run',
         sha: baseRun.head_sha,
@@ -293,12 +329,170 @@ async function resolveRemoteStrict(params: ResolveParams): Promise<ResolvedBasel
         // The age stamp is the STORED snapshot's, as on the named-artifact path: a run keeps its
         // `created_at` across re-runs, so the run's stamp would age a re-run's fresh bytes by the
         // gap between attempts. The run's stamp orders runs (newerFirst); it does not date bytes.
-        created_at: artifact.created_at ?? '',
+        created_at: walk.candidate.artifact.created_at ?? '',
+        label: artifactName,
     };
-    return {
-        ...(await extractBaseline(octokit, owner, repo, artifact.id, workDir, artifact.size_in_bytes)),
-        meta,
-    };
+    return { ...(await walk.candidate.extract(workDir)), meta };
+}
+
+// What a user does when two jobs meet on one baseline name (DN-160.D1 (2)).
+const SHARED_NAME_REMEDY =
+    'Give each job that runs Tamys its own `baseline-name`, or leave it unset so each job derives its own; ' +
+    'a matrix job whose `name:` is a literal needs the matrix value in its `name:` or in `baseline-name`';
+
+// The most candidates one resolution downloads (DN-160.D4 (3)): a bound of 4 × the compressed
+// cap on the walk. Only a name two jobs share drives the walk past its first download — a re-run's
+// newest entry is the job's own latest attempt.
+export const MAX_LINEAGE_CANDIDATES = 4;
+
+// The fields of an artifact the walk reads, common to the run listing and the repository listing.
+interface ArtifactEntry {
+    id: number;
+    created_at?: string | null;
+    size_in_bytes?: number;
+}
+
+// Newest first: `created_at` descending, ties to the larger id (ADR-14.D4's order). Among several,
+// an entry with no parseable stamp cannot be placed, so the candidates are not established; one
+// entry has no order to establish, and its unknown age is reported as unknown.
+function newestFirst<T extends ArtifactEntry>(entries: readonly T[], name: string): T[] {
+    if (entries.length <= 1) return [...entries];
+    const stamped = entries.map((entry) => {
+        const createdMs = Date.parse(entry.created_at ?? '');
+        if (Number.isNaN(createdMs)) {
+            throw new BaselineRefusal(
+                `artifact ${entry.id} named \`${name}\` carries an unparseable created_at ` +
+                    `"${String(entry.created_at)}", so the newest cannot be established`,
+            );
+        }
+        return { entry, createdMs };
+    });
+    stamped.sort((left, right) => right.createdMs - left.createdMs || right.entry.id - left.entry.id);
+    return stamped.map(({ entry }) => entry);
+}
+
+// One downloaded candidate: its sidecar read, its log not yet written. A candidate the walk does not
+// take is dropped with its bytes, so at most one other candidate is held beside the one being read.
+interface OpenedCandidate {
+    artifact: ArtifactEntry;
+    /** The stored subject, or null when the sidecar records none (written before 0.4.0). */
+    stored: BaselineSubject | null;
+    extract(workDir: string): Promise<{ logPath: string; outcomeToken: string; transport: string[] }>;
+}
+
+type Walk =
+    | { kind: 'matched'; candidate: OpenedCandidate; others: BaselineSubject[] }
+    | {
+          kind: 'unmatched';
+          /** Each downloaded candidate's stored subject, newest first, null for none recorded. */
+          seen: (BaselineSubject | null)[];
+          /** The newest candidate, kept only when the caller may still take it (`artifact=`). */
+          newest: OpenedCandidate | null;
+          /** How many candidates were never read, the ceiling having been reached. */
+          unread: number;
+      };
+
+// The newest-first walk (DN-160.D4 (2)): download one candidate at a time and read its sidecar;
+// the first whose subject equals this run's is the baseline, and the walk stops there. A sidecar
+// with no subject never matches. `keepNewest` holds the newest candidate for a caller that may
+// still take it when nothing matches; every other candidate not taken is discarded before the
+// next is read.
+async function walkCandidates(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    candidates: readonly ArtifactEntry[],
+    subject: BaselineSubject,
+    keepNewest: boolean,
+): Promise<Walk> {
+    const seen: (BaselineSubject | null)[] = [];
+    let newest: OpenedCandidate | null = null;
+    const read = candidates.slice(0, MAX_LINEAGE_CANDIDATES);
+    for (const artifact of read) {
+        const opened = await openCandidate(octokit, owner, repo, artifact);
+        if (opened.stored !== null && sameSubject(opened.stored, subject)) {
+            return { kind: 'matched', candidate: opened, others: seen.filter((each): each is BaselineSubject => each !== null) };
+        }
+        seen.push(opened.stored);
+        if (keepNewest && newest === null) newest = opened;
+    }
+    return { kind: 'unmatched', seen, newest, unread: candidates.length - read.length };
+}
+
+function distinctJobs(subjects: readonly (BaselineSubject | null)[]): BaselineSubject[] {
+    const distinct: BaselineSubject[] = [];
+    for (const each of subjects) {
+        if (each !== null && !distinct.some((known) => sameSubject(known, each))) distinct.push(each);
+    }
+    return distinct;
+}
+
+// Why a walk that matched nothing is refused (DN-160.D4 (3), (4)).
+function unmatchedReason(
+    walk: Extract<Walk, { kind: 'unmatched' }>,
+    name: string,
+    where: string,
+    subject: BaselineSubject,
+): string {
+    const read = walk.seen.length;
+    if (walk.unread > 0) {
+        return (
+            `${where} holds ${read + walk.unread} live artifacts named \`${name}\`; the Action reads at most ` +
+            `${MAX_LINEAGE_CANDIDATES}, and none of those stores ${subjectLabel(subject)}. ${SHARED_NAME_REMEDY}`
+        );
+    }
+    const stamped = distinctJobs(walk.seen);
+    if (stamped.length === 0) {
+        return `the ${read === 1 ? 'artifact' : `${read} artifacts`} named \`${name}\` in ${where} ${read === 1 ? 'is' : 'are'} not used: ${UNRECORDED_SUBJECT}`;
+    }
+    return (
+        `no artifact named \`${name}\` in ${where} stores ${subjectLabel(subject)}: ${read === 1 ? 'it stores' : `the ${read} read store`} ` +
+        `${stamped.map(subjectLabel).join(', ')}${stamped.length < read ? ' and a log with no job recorded' : ''}. ${SHARED_NAME_REMEDY}`
+    );
+}
+
+// A match found behind another job's entry is exact, so it is used, but the shared name costs a
+// download on every run and is said once (DN-160.D4 (5)).
+function warnIfShared(
+    walk: Extract<Walk, { kind: 'matched' }>,
+    name: string,
+    where: string,
+    subject: BaselineSubject,
+): void {
+    const others = distinctJobs(walk.others);
+    if (others.length === 0) return;
+    core.warning(
+        `Tamys: the baseline name \`${name}\` is shared in ${where}: ${subjectLabel(subject)} found its own ` +
+            `baseline behind the one stored by ${others.map(subjectLabel).join(', ')}. ${SHARED_NAME_REMEDY}.`,
+    );
+}
+
+// `artifact=`: this job's own entry when the walk found one; else the newest, declared, when every
+// candidate stamps one and the same other job; else a refusal — the user named an artifact that
+// several jobs stored, or one whose job is unrecorded, and nothing says which was meant
+// (DN-160.D4 (4)).
+function namedChoice(
+    walk: Walk,
+    name: string,
+    where: string,
+    subject: BaselineSubject,
+): { candidate: OpenedCandidate; stored: BaselineSubject } {
+    if (walk.kind === 'matched') {
+        warnIfShared(walk, name, where, subject);
+        return { candidate: walk.candidate, stored: subject };
+    }
+    const stamped = distinctJobs(walk.seen);
+    const uniform = walk.unread === 0 && stamped.length === 1 && walk.seen.every((each) => each !== null);
+    if (!uniform || walk.newest === null) {
+        throw new BaselineRefusal(
+            stamped.length > 1
+                ? `the newest artifacts named \`${name}\` (${where}) were stored by ${stamped.map(subjectLabel).join(', ')}, ` +
+                      `none of them ${subjectLabel(subject)}, so which one \`baseline: artifact=${name}\` means cannot be ` +
+                      `established. ${SHARED_NAME_REMEDY}`
+                : unmatchedReason(walk, name, where, subject),
+        );
+    }
+    return { candidate: walk.newest, stored: stamped[0]! };
 }
 
 // The two workflow files when the baseline's producing run belongs to a workflow other than this
@@ -424,7 +618,15 @@ const ARTIFACTS_PAGE_SIZE = 100;
 export const MAX_ARTIFACT_PAGES = 10;
 
 export type NamedArtifactScan =
-    | { kind: 'found'; artifact: RepoArtifact }
+    | {
+          kind: 'found';
+          artifact: RepoArtifact;
+          /**
+           * The live entries of the name the newest's producing run holds, newest first, the newest
+           * among them — read from the scan's own pages, with no request of their own (DN-160.D4 (1)).
+           */
+          candidates: RepoArtifact[];
+      }
     | { kind: 'none' }
     | { kind: 'refused'; reason: string };
 
@@ -509,7 +711,13 @@ export async function newestNamedArtifact(
             newest = { artifact, createdMs };
         }
     }
-    return newest ? { kind: 'found', artifact: newest.artifact } : { kind: 'none' };
+    if (newest === null) return { kind: 'none' };
+    const producer = newest.artifact.workflow_run?.id;
+    const siblings =
+        producer === undefined
+            ? [newest.artifact]
+            : listed.filter((artifact) => !artifact.expired && artifact.workflow_run?.id === producer);
+    return { kind: 'found', artifact: newest.artifact, candidates: newestFirst(siblings, name) };
 }
 
 // A stored baseline is the bytes its publishing run diffed, so it is comparable only beside the
@@ -545,18 +753,38 @@ function recordedTransport(sidecar: unknown, artifactId: number): string[] {
     return recorded;
 }
 
-// Extracts the baseline LOG plus the stamped provenance sidecar. The log entry is
-// "the one file that is not the sidecar" — the artifact carries exactly the log and
-// BASELINE_META_FILE. The sidecar's transport is required (above); its verdict token may be
-// empty, the engine ladder's honest absence rung.
-async function extractBaseline(
+// A stored baseline is one job's bytes, and a lineage belongs to one job (DN-160.D1 (3)). A sidecar
+// that names no subject — written before 0.4.0, or not a job name and a capture value — cannot show
+// whose bytes it describes, so it never matches: one cold start per lineage, which re-seeds it, on
+// the precedent of the transport.
+const UNRECORDED_SUBJECT =
+    'stored by an Action that recorded no job for its bytes, so not comparable with this run (one cold ' +
+    'start per baseline lineage; this run re-seeds it)';
+
+function recordedSubject(sidecar: Record<string, unknown>): BaselineSubject | null {
+    const recorded = sidecar['subject'];
+    const fields =
+        typeof recorded === 'object' && recorded !== null && !Array.isArray(recorded)
+            ? (recorded as Record<string, unknown>)
+            : {};
+    const job = fields['job'];
+    const capture = fields['capture'];
+    return typeof job === 'string' && job !== '' && typeof capture === 'string' ? { job, capture } : null;
+}
+
+// Downloads one candidate and reads its sidecar; its log is written only by `extract`, once the
+// walk takes it. The log entry is "the one file that is not the sidecar" — the artifact carries
+// exactly the log and BASELINE_META_FILE. The sidecar's subject decides the walk; its transport is
+// required of the candidate taken (above); its verdict token may be empty, the engine ladder's
+// honest absence rung.
+async function openCandidate(
     octokit: Octokit,
     owner: string,
     repo: string,
-    artifactId: number,
-    workDir: string,
-    artifactSize: number | undefined,
-): Promise<{ logPath: string; outcomeToken: string; transport: string[] }> {
+    artifact: ArtifactEntry,
+): Promise<OpenedCandidate> {
+    const artifactId = artifact.id;
+    const artifactSize = artifact.size_in_bytes;
     // BOUND 1 — pre-download, on the METADATA, so oversized bytes never transfer. Mirrors the
     // poster's pre-download gate rather than inventing a second shape.
     if (artifactSize !== undefined && artifactSize > MAX_BASELINE_ARTIFACT_BYTES) {
@@ -601,22 +829,36 @@ async function extractBaseline(
     if (!logEntry) {
         throw new Error(`baseline artifact ${artifactId} carries no log file`);
     }
-    const logPath = path.join(workDir, 'baseline.log');
-    await fs.writeFile(logPath, logEntry.getData());
 
     const metaEntry = files.find((candidate) => path.basename(candidate.entryName) === BASELINE_META_FILE);
     let sidecar: unknown;
+    let unreadable = false;
     if (metaEntry) {
         try {
             sidecar = JSON.parse(metaEntry.getData().toString('utf8'));
         } catch {
-            throw new BaselineRefusal(
-                `baseline artifact ${artifactId} is not used: its ${BASELINE_META_FILE} is unreadable, so ` +
-                    UNRECORDED_TRANSPORT,
-            );
+            unreadable = true;
         }
     }
-    const transport = recordedTransport(sidecar, artifactId);
-    const token = (sidecar as Record<string, unknown>)['outcome_token'];
-    return { logPath, outcomeToken: typeof token === 'string' ? token : '', transport };
+    const recorded =
+        typeof sidecar === 'object' && sidecar !== null && !Array.isArray(sidecar)
+            ? (sidecar as Record<string, unknown>)
+            : {};
+    return {
+        artifact,
+        stored: unreadable ? null : recordedSubject(recorded),
+        async extract(workDir: string) {
+            if (unreadable) {
+                throw new BaselineRefusal(
+                    `baseline artifact ${artifactId} is not used: its ${BASELINE_META_FILE} is unreadable, so ` +
+                        UNRECORDED_TRANSPORT,
+                );
+            }
+            const transport = recordedTransport(sidecar, artifactId);
+            const logPath = path.join(workDir, 'baseline.log');
+            await fs.writeFile(logPath, logEntry.getData());
+            const token = recorded['outcome_token'];
+            return { logPath, outcomeToken: typeof token === 'string' ? token : '', transport };
+        },
+    };
 }

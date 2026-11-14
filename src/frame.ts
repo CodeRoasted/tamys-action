@@ -13,10 +13,11 @@
 // The comment is a BOUNDED PROJECTION of a report that is never capped
 // (ADR-14.D12): GitHub refuses a comment over MAX_RENDERED_BODY_BYTES and posts
 // nothing, so the frame composes within that budget by construction and declares
-// every elision; the full report is the run's `tamys-report` artifact.
+// every elision; the full report is the run's `tamys-report-*` artifact.
 
 import {
     MAX_RENDERED_BODY_BYTES,
+    type BaselineSubject,
     type RankedChange,
     type TamysReport,
     type TamysCommentContext,
@@ -578,10 +579,30 @@ function crossWorkflowLine(context: TamysCommentContext): string {
     );
 }
 
+// A subject as the declaration names it: the job, and the capture when it selected a part of a log.
+function subjectPhrase(subject: BaselineSubject): string {
+    const job = `job \`${escapeInline(subject.job)}\``;
+    return subject.capture === '' ? job : `${job} (capture \`${escapeInline(subject.capture)}\`)`;
+}
+
+// The cross-job declaration (DN-160.D1 (3)), beside the cross-workflow line: an `artifact=` baseline
+// whose stored bytes are another job's than this run's. A named baseline is the user's explicit
+// choice, so the pair is diffed and DECLARED, never refused; without this line a reader takes one
+// job's log for the other's history. This run's job comes from the runs API and the baseline's from
+// the artifact's sidecar; both are escaped as any external string.
+function crossSubjectLine(context: TamysCommentContext): string {
+    const pair = context.baseline?.cross_subject;
+    if (!pair) return '';
+    return (
+        `> **Baseline from another job:** the baseline is the log of ${subjectPhrase(pair.baseline)}, this run ` +
+        `diffs ${subjectPhrase(pair.changed)}. Every difference between the two jobs reads as a change.\n\n`
+    );
+}
+
 function compose(report: TamysReport | null, context: TamysCommentContext, details: DetailsMode): string {
     const state = selectState(report);
     const header = context.comment_tag ? `${HEADER} (${context.comment_tag})` : HEADER;
-    const crossWorkflow = crossWorkflowLine(context);
+    const crossWorkflow = crossSubjectLine(context) + crossWorkflowLine(context);
     const stale = context.baseline_stale ? `${staleBanner(context)}\n\n` : '';
     const statements = report ? reportStatements(report, state, details) : '';
     return `${stickyMarker(context.comment_tag)}\n${header}\n\n${crossWorkflow}${stale}${body(report, context, state, details)}${statements}\n\n${footer(context)}`;

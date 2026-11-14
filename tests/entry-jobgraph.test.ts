@@ -102,13 +102,22 @@ interface EntryOptions {
     workflowSha: string | undefined;
 }
 
-// The named baseline artifact: the log and a 0.3.0 sidecar recording the job-log stack.
+// The named baseline artifact: the log and a sidecar recording its stack and its job.
 function baselineZip(): Buffer {
     const zip = new AdmZip();
     zip.addFile('baseline.log', Buffer.from('compile\nok\n', 'utf8'));
     zip.addFile(
         BASELINE_META_FILE,
-        Buffer.from(JSON.stringify({ context_version: CONTEXT_VERSION, outcome_token: 'success', transport: [] }), 'utf8'),
+        Buffer.from(
+            JSON.stringify({
+                context_version: CONTEXT_VERSION,
+                outcome_token: 'success',
+                transport: [],
+                // The job the `target-job` source resolves, so the named baseline is this run's own lineage.
+                subject: { job: TARGET_JOB, capture: 'auto' },
+            }),
+            'utf8',
+        ),
     );
     return zip.toBuffer();
 }
@@ -249,6 +258,7 @@ async function runEntry(options: EntryOptions): Promise<EntryRun> {
         GITHUB_SERVER_URL: 'https://github.com',
         GITHUB_REPOSITORY: `${OWNER}/${REPO}`,
         GITHUB_RUN_ID: String(RUN_ID),
+        GITHUB_RUN_ATTEMPT: '1',
         GITHUB_EVENT_NAME: 'pull_request',
         GITHUB_EVENT_PATH: eventPath,
         GITHUB_REF: 'refs/pull/7/merge',
@@ -292,14 +302,6 @@ function contentsReads(run: EntryRun): RecordedRequest[] {
 function jobsListings(run: EntryRun): RecordedRequest[] {
     return run.requests.filter(
         (request) => request.pathname === `/repos/${OWNER}/${REPO}/actions/runs/${RUN_ID}/jobs`,
-    );
-}
-
-function graphRequests(run: EntryRun): RecordedRequest[] {
-    return run.requests.filter(
-        (request) =>
-            request.pathname.startsWith(`/repos/${OWNER}/${REPO}/contents/`) ||
-            request.pathname === `/repos/${OWNER}/${REPO}/actions/runs/${RUN_ID}/jobs`,
     );
 }
 
@@ -347,7 +349,10 @@ test('entry (A3): GITHUB_WORKFLOW_SHA unset ⇒ no graph, zero graph requests, o
         `the engine must receive no --changed-job-graph without GITHUB_WORKFLOW_SHA${describeRun(run)}`,
     );
     assert.equal(run.graph, null, `the engine must receive no graph flag${describeRun(run)}`);
-    assert.deepEqual(graphRequests(run), [], `no contents or jobs request may be made${describeRun(run)}`);
+    assert.deepEqual(contentsReads(run), [], `no contents request may be made${describeRun(run)}`);
+    // The one jobs listing is the entry's own, read once per run to name this step's job (DN-160.D2);
+    // the refused graph adds none.
+    assert.equal(jobsListings(run).length, 1, `exactly one jobs listing, the entry's${describeRun(run)}`);
     const naming = run.stdout.split('\n').filter((line) => line.includes('GITHUB_WORKFLOW_SHA'));
     assert.equal(
         naming.length,
@@ -359,8 +364,8 @@ test('entry (A3): GITHUB_WORKFLOW_SHA unset ⇒ no graph, zero graph requests, o
 
 // DN-118.O3 (R5), the Action's half: once the pinned engine refuses a fold whose aggregator and
 // member claim one row, the graph is read at `target-job` grain too — one contents read, at the
-// runner's commit, a second jobs listing (the graph join's, beside the log sourcing's), the flag in
-// the argv — and the one-job line is gone. RED at tamys-action a136364, where the gate made zero
+// runner's commit, the one jobs listing the log sourcing also reads (DN-160.D2: read once per run),
+// the flag in the argv — and the one-job line is gone. RED at tamys-action a136364, where the gate made zero
 // contents reads at this grain. The engine's half (a `New — FAILING` row in a target job the graph
 // declares successful takes the job frame) is driven on the pinned engine in tools/preflight.ts.
 test('entry (R5): at target-job grain the graph is read once at GITHUB_WORKFLOW_SHA and passes --changed-job-graph', async () => {
@@ -373,8 +378,8 @@ test('entry (R5): at target-job grain the graph is read once at GITHUB_WORKFLOW_
     );
     assert.equal(
         jobsListings(run).length,
-        2,
-        `expected two jobs listings, the log sourcing's and the graph join's${describeRun(run)}`,
+        1,
+        `expected one jobs listing, read once and shared by the log sourcing and the graph join${describeRun(run)}`,
     );
     assert.ok(run.argv.includes('--changed-job-graph'), `the engine must receive --changed-job-graph${describeRun(run)}`);
     assert.ok(run.graph, `the engine received no graph file${describeRun(run)}`);
