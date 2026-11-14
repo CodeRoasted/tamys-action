@@ -881,6 +881,50 @@ test('artifact provenance: the footnote names the baseline artifact, not a branc
     assert.ok(!out.includes('last green run on'));
 });
 
+// DN-118.D5 (ROADMAP N365): a baseline from another workflow is DECLARED in one line under the
+// header, naming both workflow files; an equal workflow prints nothing.
+function artifactBaseline(over: Partial<NonNullable<TamysCommentContext['baseline']>> = {}): TamysCommentContext['baseline'] {
+    return {
+        kind: 'artifact',
+        sha: BASE_SHA,
+        run_id: '80',
+        run_url: 'https://github.com/o/r/actions/runs/80',
+        branch: 'main',
+        created_at: '2026-07-01T00:00:00Z',
+        label: 'tamys-baseline-main-build',
+        ...over,
+    };
+}
+
+const CROSS_WORKFLOW_LINE =
+    '> **Baseline from another workflow:** the baseline was produced by `.github/workflows/ci.yml`, this run ' +
+    'by `.github/workflows/release.yaml`. A job one of them calls as a reusable workflow (`caller / job`) is ' +
+    'a different unit from the same job run directly, so it reads as one job gone and one job new.';
+
+test('cross-workflow baseline: one header line names both workflow files, before the body', () => {
+    const out = renderComment(load('drift.json'), ctx({
+        baseline: artifactBaseline({
+            cross_workflow: { baseline: '.github/workflows/ci.yml', changed: '.github/workflows/release.yaml' },
+        }),
+    }));
+    assert.ok(out.includes(`${HEADER}\n\n${CROSS_WORKFLOW_LINE}\n\n`), out);
+    assert.equal(out.split('\n').filter((line) => line.includes('Baseline from another workflow')).length, 1);
+});
+
+test('cross-workflow baseline: a baseline of the same workflow prints no such line', () => {
+    const out = renderComment(load('drift.json'), ctx({ baseline: artifactBaseline() }));
+    assert.ok(!out.includes('another workflow'), out);
+});
+
+test('cross-workflow baseline: workflow file names are escaped as inline text', () => {
+    const out = renderComment(load('drift.json'), ctx({
+        baseline: artifactBaseline({
+            cross_workflow: { baseline: '.github/workflows/a`b.yml', changed: '.github/workflows/c.yml' },
+        }),
+    }));
+    assert.ok(out.includes(`\`${escapeInline('.github/workflows/a`b.yml')}\``), out);
+});
+
 test('cold start with a configured source: the copy names the source, not the base branch', () => {
     const out = renderComment(null, ctx({
         baseline: undefined,

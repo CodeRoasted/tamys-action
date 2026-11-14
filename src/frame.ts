@@ -562,12 +562,29 @@ function reportStatements(report: TamysReport, state: State, details: DetailsMod
     return `\n\n${parts.join('\n\n')}`;
 }
 
+// The cross-workflow declaration (DN-118.D5), the first line under the header when the baseline's
+// producing run belongs to another workflow. The engine never pairs a job across workflows: the
+// reusable-call prefix is part of a job's identity, so `ci / build_pipeline` and `build_pipeline`
+// are two units, and without this line a reader takes the vanished and new jobs for a pipeline
+// change. The workflow paths come from the runs API and are escaped as any external string.
+function crossWorkflowLine(context: TamysCommentContext): string {
+    const pair = context.baseline?.cross_workflow;
+    if (!pair) return '';
+    return (
+        `> **Baseline from another workflow:** the baseline was produced by \`${escapeInline(pair.baseline)}\`, ` +
+        `this run by \`${escapeInline(pair.changed)}\`. A job one of them calls as a reusable workflow ` +
+        '(`caller / job`) is a different unit from the same job run directly, so it reads as one job gone ' +
+        'and one job new.\n\n'
+    );
+}
+
 function compose(report: TamysReport | null, context: TamysCommentContext, details: DetailsMode): string {
     const state = selectState(report);
     const header = context.comment_tag ? `${HEADER} (${context.comment_tag})` : HEADER;
+    const crossWorkflow = crossWorkflowLine(context);
     const stale = context.baseline_stale ? `${staleBanner(context)}\n\n` : '';
     const statements = report ? reportStatements(report, state, details) : '';
-    return `${stickyMarker(context.comment_tag)}\n${header}\n\n${stale}${body(report, context, state, details)}${statements}\n\n${footer(context)}`;
+    return `${stickyMarker(context.comment_tag)}\n${header}\n\n${crossWorkflow}${stale}${body(report, context, state, details)}${statements}\n\n${footer(context)}`;
 }
 
 // The full sticky-comment markdown. `report === null` ⇒ cold start. A

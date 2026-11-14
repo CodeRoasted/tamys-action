@@ -28,6 +28,10 @@ const unreached = (): never => {
     throw new Error('resolveBaseline kept calling the API after an earlier failure');
 };
 
+// An `artifact=` resolution reads this run and the artifact's producing run to compare their
+// workflows (DN-118.D5); here both belong to one workflow, so nothing is declared.
+const sameWorkflow = async () => ({ data: { workflow_id: 42, path: '.github/workflows/ci.yml' } });
+
 test('a 403 on the first API call degrades to cold start (null), never throws', async () => {
     const octokit = {
         rest: {
@@ -169,7 +173,7 @@ test('artifact=<name>: newest live artifact resolves repo-wide; expired + own-ru
     const octokit = {
         rest: {
             actions: {
-                getWorkflowRun: unreached,
+                getWorkflowRun: sameWorkflow,
                 listWorkflowRuns: unreached,
                 listWorkflowRunArtifacts: unreached,
                 listArtifactsForRepo: async (args: { name: string }) => {
@@ -215,7 +219,7 @@ test('the stamped sidecar rides back: outcome token verbatim, log entry selected
     const octokit = {
         rest: {
             actions: {
-                getWorkflowRun: unreached,
+                getWorkflowRun: sameWorkflow,
                 listWorkflowRuns: unreached,
                 listWorkflowRunArtifacts: unreached,
                 listArtifactsForRepo: async () => ({
@@ -244,6 +248,85 @@ test('the stamped sidecar rides back: outcome token verbatim, log entry selected
         await fs.readFile(resolved.logPath, 'utf8'),
         'stamped baseline\n',
         'the LOG entry must be selected, never the sidecar',
+    );
+});
+
+// DN-118.D5 (ROADMAP N365): a job's reusable-call prefix is its identity, so a baseline produced
+// by ANOTHER workflow is never paired across by the engine; the resolver records both workflow
+// files so the report can declare it. The producing run and this run are each read once, and the
+// comparison is by `workflow_id`, never by a name.
+function crossWorkflowOctokit(producerWorkflowId: number, producerPath: string): unknown {
+    const runs: Record<number, { workflow_id: number; path: string }> = {
+        1: { workflow_id: 42, path: '.github/workflows/release.yaml' }, // THIS run
+        80: { workflow_id: producerWorkflowId, path: producerPath }, // the artifact's producing run
+    };
+    return {
+        rest: {
+            actions: {
+                getWorkflowRun: async (args: { run_id: number }) => {
+                    const run = runs[args.run_id];
+                    assert.ok(run, `getWorkflowRun asked for run ${args.run_id}, neither this run nor the producer`);
+                    return { data: run };
+                },
+                listWorkflowRuns: unreached,
+                listWorkflowRunArtifacts: unreached,
+                listArtifactsForRepo: async () => ({
+                    data: {
+                        total_count: 1,
+                        artifacts: [
+                            {
+                                id: 1,
+                                expired: false,
+                                created_at: '2026-07-01T00:00:00Z',
+                                workflow_run: { id: 80, head_sha: 'abc1234def', head_branch: 'main' },
+                            },
+                        ],
+                    },
+                }),
+                downloadArtifact: async () => baselineZip('baseline\n'),
+            },
+        },
+    };
+}
+
+test('artifact=<name>: a producing run of ANOTHER workflow is recorded, naming both workflow files', async () => {
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tamys-test-'));
+    const resolved = await resolveBaseline(
+        params(crossWorkflowOctokit(7, '.github/workflows/ci.yml'), {
+            spec: { kind: 'artifact', name: 'tamys-baseline-main-build' },
+            workDir,
+        }),
+    );
+    assert.ok(resolved);
+    assert.deepEqual(resolved.meta.cross_workflow, {
+        baseline: '.github/workflows/ci.yml',
+        changed: '.github/workflows/release.yaml',
+    });
+});
+
+test('artifact=<name>: a producing run of THIS workflow records nothing', async () => {
+    const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tamys-test-'));
+    const resolved = await resolveBaseline(
+        params(crossWorkflowOctokit(42, '.github/workflows/release.yaml'), {
+            spec: { kind: 'artifact', name: 'tamys-baseline-main-build' },
+            workDir,
+        }),
+    );
+    assert.ok(resolved);
+    assert.equal(resolved.meta.cross_workflow, undefined);
+});
+
+test('artifact=<name>: a producing run whose workflow cannot be read is a cold start, never an undeclared diff', async () => {
+    const octokit = crossWorkflowOctokit(7, '.github/workflows/ci.yml') as {
+        rest: { actions: Record<string, unknown> };
+    };
+    octokit.rest.actions['getWorkflowRun'] = async () => {
+        throw Object.assign(new Error('Resource not accessible by integration'), { status: 403 });
+    };
+    octokit.rest.actions['downloadArtifact'] = unreached;
+    assert.equal(
+        await resolveBaseline(params(octokit, { spec: { kind: 'artifact', name: 'tamys-baseline-main-build' } })),
+        null,
     );
 });
 
@@ -579,7 +662,7 @@ function artifactsOctokit(pages: { total_count: number; artifacts: StubArtifact[
     const octokit = {
         rest: {
             actions: {
-                getWorkflowRun: unreached,
+                getWorkflowRun: sameWorkflow,
                 listWorkflowRuns: unreached,
                 listWorkflowRunArtifacts: unreached,
                 listArtifactsForRepo: async (args: Record<string, unknown>) => {
@@ -774,7 +857,7 @@ function oneArtifactOctokit(zip: () => { data: ArrayBuffer }) {
     const octokit = {
         rest: {
             actions: {
-                getWorkflowRun: unreached,
+                getWorkflowRun: sameWorkflow,
                 listWorkflowRuns: unreached,
                 listWorkflowRunArtifacts: unreached,
                 listArtifactsForRepo: async () => ({

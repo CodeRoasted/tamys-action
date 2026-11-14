@@ -46,6 +46,8 @@ const BASELINE_RUN_ID = 3131;
 const BASELINE_RUN_SHA = 'c'.repeat(40);
 const BASELINE_RUN_ATTEMPT = 2;
 const BASELINE_ARTIFACT = 'tamys-baseline-main';
+// The workflow both runs belong to, as the runs API identifies it.
+const WORKFLOW_ID = 77;
 
 // The re-wired aggregator: the base declares `gate` needs `a`; the PR re-wires it to `b`.
 const WORKFLOW_AT: Record<string, string> = {
@@ -158,12 +160,20 @@ function serve(recorded: RecordedRequest[]) {
             response.end(baselineZip());
             return;
         }
+        // This run, which an `artifact=` baseline reads to compare its producing run's workflow
+        // (DN-118.D5): the same workflow as the baseline run, so no cross-workflow pair is declared.
+        if (pathname === `/repos/${OWNER}/${REPO}/actions/runs/${RUN_ID}`) {
+            response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+            response.end(JSON.stringify({ id: RUN_ID, event: 'pull_request', workflow_id: WORKFLOW_ID, path: WORKFLOW_PATH }));
+            return;
+        }
         if (pathname === `/repos/${OWNER}/${REPO}/actions/runs/${BASELINE_RUN_ID}`) {
             response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
             response.end(
                 JSON.stringify({
                     id: BASELINE_RUN_ID,
                     event: 'push',
+                    workflow_id: WORKFLOW_ID,
                     path: WORKFLOW_PATH,
                     head_sha: BASELINE_RUN_SHA,
                     run_attempt: BASELINE_RUN_ATTEMPT,

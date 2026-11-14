@@ -101,6 +101,14 @@ export interface BaselineProvenance {
     created_at: string;
     /** artifact: the artifact name; path: the file path. Absent for kind 'run'. */
     label?: string;
+    /**
+     * Set only when the baseline's producing run belongs to a workflow other than this run's
+     * (DN-118.D5): both workflow files, as the runs API names them. A job's reusable-call prefix
+     * is part of its identity, so such a pair is never undone by the engine; it is DECLARED on
+     * the report. Only `artifact=` can resolve across workflows (`auto` and `branch=` read this
+     * workflow's runs, `path=` names no run), so only that kind ever carries it.
+     */
+    cross_workflow?: { baseline: string; changed: string };
 }
 
 // Where this run's full report lives: the `tamys-report` workflow artifact the Action uploaded,

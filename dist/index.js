@@ -63028,6 +63028,10 @@ async function resolveRemoteStrict(params) {
       created_at: artifact2.created_at ?? "",
       label: spec.name
     };
+    if (producerRun?.id !== void 0) {
+      const crossWorkflow = await crossWorkflowOf(octokit, owner, repo, producerRun.id, runId);
+      if (crossWorkflow) meta2.cross_workflow = crossWorkflow;
+    }
     return {
       ...await extractBaseline(octokit, owner, repo, artifact2.id, workDir, artifact2.size_in_bytes),
       meta: meta2
@@ -63071,6 +63075,12 @@ async function resolveRemoteStrict(params) {
     ...await extractBaseline(octokit, owner, repo, artifact.id, workDir, artifact.size_in_bytes),
     meta
   };
+}
+async function crossWorkflowOf(octokit, owner, repo, producerRunId, runId) {
+  const thisRun = (await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
+  const producer = (await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: producerRunId })).data;
+  if (producer.workflow_id === thisRun.workflow_id) return null;
+  return { baseline: producer.path, changed: thisRun.path };
 }
 var RUNS_PAGE_SIZE = 100;
 function newerFirst(left, right) {
@@ -67205,9 +67215,17 @@ function reportStatements(report, state3, details) {
 
 ${parts.join("\n\n")}`;
 }
+function crossWorkflowLine(context5) {
+  const pair = context5.baseline?.cross_workflow;
+  if (!pair) return "";
+  return `> **Baseline from another workflow:** the baseline was produced by \`${escapeInline(pair.baseline)}\`, this run by \`${escapeInline(pair.changed)}\`. A job one of them calls as a reusable workflow (\`caller / job\`) is a different unit from the same job run directly, so it reads as one job gone and one job new.
+
+`;
+}
 function compose(report, context5, details) {
   const state3 = selectState(report);
   const header = context5.comment_tag ? `${HEADER} (${context5.comment_tag})` : HEADER;
+  const crossWorkflow = crossWorkflowLine(context5);
   const stale = context5.baseline_stale ? `${staleBanner(context5)}
 
 ` : "";
@@ -67215,7 +67233,7 @@ function compose(report, context5, details) {
   return `${stickyMarker(context5.comment_tag)}
 ${header}
 
-${stale}${body(report, context5, state3, details)}${statements}
+${crossWorkflow}${stale}${body(report, context5, state3, details)}${statements}
 
 ${footer(context5)}`;
 }

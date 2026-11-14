@@ -194,6 +194,14 @@ canonical topology — main/tag runs diff vs the main baseline and re-seed it; P
 **and** vs their own previous run — is in
 [`examples/baselines/ci.yml`](examples/baselines/ci.yml).
 
+A named baseline is repo-wide, so the run that stored it may belong to **another workflow**. Tamys
+never pairs a job across workflows: a job called through a reusable workflow is named with its
+caller's prefix (`ci / build`), and that prefix is part of its identity, so `ci / build` and
+`build` are two different jobs. When the baseline's producing run belongs to another workflow, the
+comment says so in one line under its header, naming both workflow files; a baseline from the same
+workflow adds nothing. The comparison costs two reads of the runs API, and a failed read is a cold
+start with its reason, never a diff without the line.
+
 ## The comment and the full report
 
 GitHub refuses a comment over 65,536 characters and posts nothing, and one log line can be far

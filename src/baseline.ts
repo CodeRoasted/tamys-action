@@ -242,6 +242,12 @@ async function resolveRemoteStrict(params: ResolveParams): Promise<ResolvedBasel
             created_at: artifact.created_at ?? '',
             label: spec.name,
         };
+        // An artifact the listing names no producing run for has no workflow to compare: its
+        // footnote carries no run either, so nothing on the report claims a same-workflow pair.
+        if (producerRun?.id !== undefined) {
+            const crossWorkflow = await crossWorkflowOf(octokit, owner, repo, producerRun.id, runId);
+            if (crossWorkflow) meta.cross_workflow = crossWorkflow;
+        }
         return {
             ...(await extractBaseline(octokit, owner, repo, artifact.id, workDir, artifact.size_in_bytes)),
             meta,
@@ -293,6 +299,27 @@ async function resolveRemoteStrict(params: ResolveParams): Promise<ResolvedBasel
         ...(await extractBaseline(octokit, owner, repo, artifact.id, workDir, artifact.size_in_bytes)),
         meta,
     };
+}
+
+// The two workflow files when the baseline's producing run belongs to a workflow other than this
+// run's, else null (DN-118.D5). Only `artifact=` reaches here: it is repo-wide by design, so it is
+// the one resolver that can hand back another workflow's bytes. The engine never pairs across
+// workflows (a job's reusable-call prefix is its identity, `ci / build` is not `build`), so the
+// report DECLARES the pair instead. Workflows compare by `workflow_id`; the paths only name them.
+// An API error here throws like every other read of the strict resolver, so the run degrades to a
+// cold start with the reason: a baseline whose workflow cannot be established is never diffed
+// without the declaration it may owe.
+async function crossWorkflowOf(
+    octokit: Octokit,
+    owner: string,
+    repo: string,
+    producerRunId: number,
+    runId: number,
+): Promise<{ baseline: string; changed: string } | null> {
+    const thisRun = (await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
+    const producer = (await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: producerRunId })).data;
+    if (producer.workflow_id === thisRun.workflow_id) return null;
+    return { baseline: producer.path, changed: thisRun.path };
 }
 
 type ListWorkflowRuns = Octokit['rest']['actions']['listWorkflowRuns'];
