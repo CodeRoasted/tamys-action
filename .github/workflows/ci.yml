@@ -35,7 +35,7 @@ jobs:
       contents: write
       pull-requests: write   # Tamys dogfood: comment on same-repo PRs + seed on push; fork PRs skipped (read-only token anyway)
       actions: write         # Tamys dogfood: upload the baseline-log artifact (+ read for last-green resolution)
-    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-node-ci.yml@901617e78cd25b61052e56236018252225322490
+    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-node-ci.yml@d33c84a0754b7a1a249e76d9c1e3f47afe016600
     with:
       node-version: '24'
       checks: |
@@ -56,7 +56,7 @@ jobs:
   # actionlint too: this repository is PUBLIC, so a fork's pull request is judged only by its own
   # CI — the cut and the commit gate never see it, and without this job external PRs go unlinted.
   actionlint:
-    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-lint.yml@901617e78cd25b61052e56236018252225322490
+    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-lint.yml@d33c84a0754b7a1a249e76d9c1e3f47afe016600
     permissions:
       contents: read
       actions: read   # malf's conan cache restore reads this job's runner group (actions-cache-allowed.sh)
@@ -74,7 +74,7 @@ jobs:
   # push:main run after merge, before the floating @v3 is re-pointed.
   manifest-load:
     if: github.event_name != 'pull_request'
-    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-tamys-manifest-load.yml@901617e78cd25b61052e56236018252225322490
+    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-tamys-manifest-load.yml@d33c84a0754b7a1a249e76d9c1e3f47afe016600
 
   # `OPS-7.S112` cell 1 — the publicly documented Windows install path (`install.ps1`), executed the
   # way a user runs it, with a negative arm first: malf's `coderoast-tamys-windows-install.yml`. This
@@ -82,7 +82,7 @@ jobs:
   # passed (the Founder's ruling: a public repository's Windows leg is hosted; both self-hosted groups
   # refuse public repositories).
   windows-install:
-    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-tamys-windows-install.yml@901617e78cd25b61052e56236018252225322490
+    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-tamys-windows-install.yml@d33c84a0754b7a1a249e76d9c1e3f47afe016600
 
   release:
     # THE MARKETPLACE MECHANISM. A Marketplace listing can only be republished from a
