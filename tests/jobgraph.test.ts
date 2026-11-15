@@ -191,7 +191,7 @@ test('executedWorkflowCoordinate (A4): refuses each malformed input, with a reas
 
 // A stand-in for the one REST call the resolver makes, serving the workflow file PER COMMIT and
 // recording every call, so an arm can say both what was read and what was not. The run's jobs
-// listing is handed in, read once by the entry (DN-160.D2), never read by the resolver itself.
+// listing is handed in, read once by the entry (ADR-14.D4), never read by the resolver itself.
 const REWIRED_AT: Record<string, string> = {
     [BASE_SHA]: ['jobs:', '  a: {}', '  b: {}', '  gate:', '    needs: [a]'].join('\n'),
     [EXECUTED_SHA]: ['jobs:', '  a: {}', '  b: {}', '  gate:', '    needs: [b]'].join('\n'),
@@ -309,7 +309,7 @@ test('resolveChangedJobGraph (A3): no runner commit ⇒ ABSENT, zero requests, o
     assert.match(lines[0]!, /^Tamys: no declared job graph — GITHUB_WORKFLOW_SHA is absent or empty\./);
 });
 
-// DN-160.D2: the listing is read once by the entry and handed in; a listing that could not be read
+// ADR-14.D4: the listing is read once by the entry and handed in; a listing that could not be read
 // leaves the graph ABSENT with its reason, after the workflow file was read at the coordinate.
 test('resolveChangedJobGraph: a failed run listing ⇒ ABSENT, one log line naming the listing failure', async () => {
     const { octokit, calls } = standIn();

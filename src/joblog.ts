@@ -206,7 +206,7 @@ export interface FetchJobLogParams {
     octokit: Octokit;
     owner: string;
     repo: string;
-    /** This run's jobs listing, every page — read once per run (`readRunJobs`, DN-160.D2). */
+    /** This run's jobs listing, every page — read once per run (`readRunJobs`, ADR-14.D4). */
     jobs: readonly JobRow[];
     jobName: string;
     capture: string; // 'auto' | 'off' | <section name>

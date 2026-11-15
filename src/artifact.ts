@@ -37,8 +37,8 @@ const RETENTION_DAYS = 90;
 // (BASELINE_META_FILE) carrying this run's native CI verdict token — what the NEXT run forwards as
 // `--baseline-outcome` (ADR-17.D5: the outcome-bearing fixture pins its side-input) — the stack
 // those bytes were declared under, which it forwards as `--baseline-transport` (DN-89.D38), and the
-// subject those bytes are, which it checks against its own (DN-160.D1, the stored job). `name` has no default:
-// a shared constant is how two jobs came to publish one lineage (DN-160.D1).
+// subject those bytes are, which it checks against its own (ADR-14.D4, the stored job). `name` has no default:
+// a shared constant is how two jobs came to publish one lineage (ADR-14.D4).
 export async function publishBaselineLog(
     logPath: string,
     outcomeToken: string,

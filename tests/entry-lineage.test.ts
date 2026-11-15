@@ -6,7 +6,7 @@
 // under (the artifact service records every CreateArtifact), whether it downloads or hands the engine
 // a baseline, the warnings it prints, and the comment it writes to the job summary.
 //
-// The expected names are spelled out here from DN-160.D2's grammar, never imported from the Action:
+// The expected names are spelled out here from ADR-14.D4's grammar, never imported from the Action:
 // an arm must red if the derivation drifts, so it may not read the derivation.
 
 import { test } from 'node:test';
@@ -42,12 +42,12 @@ const OTHER_RUNNER = 'GitHub Actions 8';
 const BUILD = 'build / build';
 const MANIFEST_LOAD = 'manifest-load / manifest-load';
 
-// DN-160.D2: `tamys-<kind>-<slug>-<first 16 hex of sha256 over JSON [job, capture, tag]>`.
+// ADR-14.D4: `tamys-<kind>-<slug>-<first 16 hex of sha256 over JSON [job, capture, tag]>`.
 function digest(job: string, capture: string, tag: string): string {
     return createHash('sha256').update(JSON.stringify([job, capture, tag]), 'utf8').digest('hex').slice(0, 16);
 }
 const BUILD_BASELINE = `tamys-baseline-build-build-${digest(BUILD, '', '')}`;
-// DN-160.D4: the report's name carries the run attempt; the baseline's never does.
+// ADR-14.D4: the report's name carries the run attempt; the baseline's never does.
 const buildReport = (attempt: number) => `tamys-report-build-build-${digest(BUILD, '', '')}-${attempt}`;
 
 interface ListingRow {
@@ -509,7 +509,7 @@ for (const attempt of [1, 2]) {
     });
 }
 
-// ── Arms 4, 4b, 4c, 5: the newest-first walk over one name's entries in one run (DN-160.D4) ──
+// ── Arms 4, 4b, 4c, 5: the newest-first walk over one name's entries in one run (ADR-14.D4) ──
 
 const SHARED = 'shared-name';
 

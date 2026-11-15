@@ -110,7 +110,7 @@ export interface BaselineProvenance {
      */
     cross_workflow?: { baseline: string; changed: string };
     /**
-     * Set only when the stored bytes are another job's than this run's (DN-160.D1, the stored job): both
+     * Set only when the stored bytes are another job's than this run's (ADR-14.D4, the stored job): both
      * subjects. Only `artifact=` carries it — a named baseline is the user's explicit choice, so a
      * cross-job pair is DECLARED on the report, as a cross-workflow pair is; under `auto` and
      * `branch=` the Action chose the pairing, so a differing subject is refused instead.
@@ -158,12 +158,12 @@ export interface TamysCommentContext {
 // 0.3.0: the baseline sidecar records the transport stack its stored bytes were declared under
 // (DN-89.D38 §4), a REQUIRED member; a sidecar without it is not a baseline.
 // 0.4.0: the baseline sidecar records the subject its stored bytes are — the job and the capture
-// (DN-160.D1, the stored job), a REQUIRED member; a sidecar without it is not a baseline.
+// (ADR-14.D4, the stored job), a REQUIRED member; a sidecar without it is not a baseline.
 export const CONTEXT_VERSION = '0.4.0';
 
 // The self-published baseline store (contract § 3): every run uploads its ingested log under its
 // lineage's name, and the next run of the same job resolves it by that name. The default name is
-// DERIVED from the job (subject.ts, DN-160.D2) as `tamys-baseline-<slug>-<digest>`; this is only
+// DERIVED from the job (subject.ts, ADR-14.D4) as `tamys-baseline-<slug>-<digest>`; this is only
 // its prefix. An explicit `baseline-name` is used verbatim.
 export const BASELINE_ARTIFACT_PREFIX = 'tamys-baseline';
 
@@ -183,7 +183,7 @@ export interface BaselineMeta {
      * `--baseline-transport`.
      */
     transport: string[];
-    /** The subject the stored bytes are (DN-160.D1, the stored job). REQUIRED since 0.4.0. */
+    /** The subject the stored bytes are (ADR-14.D4, the stored job). REQUIRED since 0.4.0. */
     subject: BaselineSubject;
 }
 
@@ -208,7 +208,7 @@ export const TRANSPORT_CATALOGUE: readonly string[] = [
 // The full report, uploaded on every run that has one (report.json as the engine wrote it, and
 // its markdown as report.md). The comment is a bounded projection of it; this artifact is where
 // a row the comment could not show in full is read whole. Its name is derived over the same key as
-// the baseline's (subject.ts, DN-160.D2) as `tamys-report-<slug>-<digest>`, so the comment's
+// the baseline's (subject.ts, ADR-14.D4) as `tamys-report-<slug>-<digest>`, so the comment's
 // pointer names one artifact of its run; this is only its prefix.
 export const TAMYS_REPORT_ARTIFACT_PREFIX = 'tamys-report';
 export const TAMYS_REPORT_JSON_FILE = 'report.json';

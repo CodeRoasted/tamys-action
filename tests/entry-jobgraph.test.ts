@@ -350,7 +350,7 @@ test('entry (A3): GITHUB_WORKFLOW_SHA unset ⇒ no graph, zero graph requests, o
     );
     assert.equal(run.graph, null, `the engine must receive no graph flag${describeRun(run)}`);
     assert.deepEqual(contentsReads(run), [], `no contents request may be made${describeRun(run)}`);
-    // The one jobs listing is the entry's own, read once per run to name this step's job (DN-160.D2);
+    // The one jobs listing is the entry's own, read once per run to name this step's job (ADR-14.D4);
     // the refused graph adds none.
     assert.equal(jobsListings(run).length, 1, `exactly one jobs listing, the entry's${describeRun(run)}`);
     const naming = run.stdout.split('\n').filter((line) => line.includes('GITHUB_WORKFLOW_SHA'));
@@ -364,7 +364,7 @@ test('entry (A3): GITHUB_WORKFLOW_SHA unset ⇒ no graph, zero graph requests, o
 
 // DN-118.O3 (R5), the Action's half: once the pinned engine refuses a fold whose aggregator and
 // member claim one row, the graph is read at `target-job` grain too — one contents read, at the
-// runner's commit, the one jobs listing the log sourcing also reads (DN-160.D2: read once per run),
+// runner's commit, the one jobs listing the log sourcing also reads (ADR-14.D4: read once per run),
 // the flag in the argv — and the one-job line is gone. RED at tamys-action a136364, where the gate made zero
 // contents reads at this grain. The engine's half (a `New — FAILING` row in a target job the graph
 // declares successful takes the job frame) is driven on the pinned engine in tools/preflight.ts.

@@ -1,6 +1,6 @@
 // DN-160.O1 arm 12: no shared default name is left. The constant two jobs collided on survives only
 // as the prefix of the derived names, and the baseline publisher takes its name from its caller —
-// a default parameter is how every job came to publish one lineage (DN-160.D1).
+// a default parameter is how every job came to publish one lineage (ADR-14.D4).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

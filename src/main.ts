@@ -194,11 +194,11 @@ async function run(): Promise<void> {
     const { owner, repo } = github.context.repo;
 
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tamys-'));
-    // This run's jobs listing, read ONCE (DN-160.D2): the target job is looked up in it, this step's
+    // This run's jobs listing, read ONCE (ADR-14.D4): the target job is looked up in it, this step's
     // own job is named from it, and the changed side's graph joins the same rows.
     const listing = await readRunJobs(octokit, owner, repo, github.context.runId);
     // What this run diffs — the job and the capture — which names its baseline lineage and its
-    // report (subject.ts, DN-160.D1).
+    // report (subject.ts, ADR-14.D4).
     let subjectResolution: SubjectResolution;
     const changedLog = path.join(workDir, 'changed.log');
     // The native verdict token this run forwards to the engine ('' = none — the
@@ -291,7 +291,7 @@ async function run(): Promise<void> {
     const commentTag = core.getInput('comment-tag') || undefined;
     // The lineage: an explicit `baseline-name` verbatim (the user is King of the baseline), else the
     // name derived from the subject; the report's name is always derived. A run whose job is not
-    // established has neither, and says why once (DN-160.D1, the unestablished job).
+    // established has neither, and says why once (ADR-14.D4, the unestablished job).
     let lineage: Lineage | null = null;
     let reportName: string | null = null;
     if (subjectResolution.kind === 'established') {
@@ -519,7 +519,7 @@ async function run(): Promise<void> {
     const shouldSeed =
         publishMode === 'always' ? true : publishMode === 'never' ? false : pr ? true : !runOutcomeBad;
     // Seeds the lineage under its name with the subject stamped. A run whose job is not established
-    // has no lineage and seeds nothing; its warning already said so (DN-160.D1, the unestablished job).
+    // has no lineage and seeds nothing; its warning already said so (ADR-14.D4, the unestablished job).
     const seed = async (): Promise<void> => {
         if (lineage === null) return;
         const { artifactName, subject } = lineage;

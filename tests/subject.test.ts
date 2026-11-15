@@ -1,4 +1,4 @@
-// The derived artifact names (DN-160.D2; DN-160.O1 arms 3, 10, 11). The expected names are spelled out from the grammar here, never read from the
+// The derived artifact names (ADR-14.D4; DN-160.O1 arms 3, 10, 11). The expected names are spelled out from the grammar here, never read from the
 // Action: an arm must red if the derivation drifts.
 
 import { test } from 'node:test';

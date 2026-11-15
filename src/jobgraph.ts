@@ -630,7 +630,7 @@ export function executedWorkflowCoordinate(env: RunnerWorkflowEnv): WorkflowCoor
     return { kind: 'executed', path, sha: workflowSha };
 }
 
-// This run's jobs listing, read ONCE per run before the baseline is resolved (DN-160.D2): the
+// This run's jobs listing, read ONCE per run before the baseline is resolved (ADR-14.D4): the
 // subject's job is named from it, and the changed side's graph joins the same rows. A failed read
 // is carried with its error, so each consumer states it in its own terms.
 export type RunJobs = { kind: 'listed'; jobs: ListedJob[] } | { kind: 'failed'; error: unknown };
