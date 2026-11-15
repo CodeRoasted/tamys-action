@@ -481,7 +481,7 @@ async function run(): Promise<void> {
     // narrate it via `tamys explain --report` — so the narrative explains THIS run's real
     // diff, not a re-diff against an empty baseline (the §3.6 decoupled-narration seam).
     // §3.6-safe: report.json is exactly the content already in the comment/summary — no
-    // credential, no courtesy. Empty `report-path` on cold start (no report produced).
+    // credential. Empty `report-path` on cold start (no report produced).
     let reportPathOut = '';
     if (report) {
         reportPathOut = path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'tamys-report.json');
