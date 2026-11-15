@@ -38,7 +38,7 @@ jobs:
   # The body is malf's `coderoast-tamys-wall-time.yml` (ROADMAP N357); this file keeps the dispatch
   # and its defaults.
   wall-time:
-    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-tamys-wall-time.yml@d33c84a0754b7a1a249e76d9c1e3f47afe016600
+    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-tamys-wall-time.yml@b19e8fcc3883664d1340e70756d9ca9c3cc10e0f
     with:
       rungs: ${{ inputs.rungs }}
       reps: ${{ inputs.reps }}
