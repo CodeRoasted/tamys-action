@@ -1,6 +1,6 @@
 {
   "name": "tamys-action",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "type": "module",
   "description": "Tamys — structural diff of your CI logs, as a sticky PR comment + advisory gate.",

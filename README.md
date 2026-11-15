@@ -456,7 +456,7 @@ a local shell.
 
 ## Upgrading within `v3`
 
-From `v3.0.0`, the default baseline and report names are per job (see
+From `v3.1.0`, the default baseline and report names are per job (see
 [Choosing the baseline](#choosing-the-baseline--you-are-king)). What you meet on upgrade:
 
 1. **On the default name: one cold start per workflow, job and base branch.** The first run looks for
