@@ -61,7 +61,7 @@ jobs:
   showcase:
     permissions:
       contents: read
-    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-tamys-showcase.yml@e103214ca76fa8d4a7a5ede9a6107a36d6822037
+    uses: CodeRoasted/malf-toolchain/.github/workflows/coderoast-tamys-showcase.yml@c34f2ef15b30406b7d39b70f680ae1e7e659ee28
     with:
       tamys-version: ${{ inputs.tamys_version }}
       samples-ref: ${{ inputs.samples_ref || 'main' }}
